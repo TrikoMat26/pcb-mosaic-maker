@@ -118,11 +118,10 @@ class MainWindow(QMainWindow):
             return
         pd.close()
 
-        # Preview basse rés.
+        # after successful auto‑align preview
         self.canvas.set_preview(imgs, self.homographies)
-        self.tools.set_images(self.canvas)
-
-        self.act_export.setEnabled(True)
+        self.canvas.prepare_manual(imgs, self.homographies)   # NEW
+        self.tools.set_canvas(self.canvas, [d["path"] for d in self.images_data])
 
     # ------------------------------------------------------------------ #
     def export_mosaic(self):
@@ -180,7 +179,8 @@ class MainWindow(QMainWindow):
 
                 H_full.append(S_ref @ Ht @ S_i_inv)
 
-            mosaic = self.stitcher.stitch(imgs_full, H_full, scale=scale)
+            H_for_export = self.canvas.final_homographies()   # includes manual deltas
+            mosaic = self.stitcher.stitch(imgs_full, H_for_export, scale=scale)
 
         except Exception as e:
             QMessageBox.critical(self, "Erreur fusion", str(e))
