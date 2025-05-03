@@ -3,8 +3,8 @@ from typing import List
 import numpy as np, cv2
 from math import cos, sin, radians
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QTransform, QKeyEvent
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtGui import QPixmap, QImage, QWheelEvent, QPainter, QTransform, QKeyEvent, QPen, QBrush, QColor
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
 
 # ---- helper ----
@@ -16,8 +16,31 @@ def cv2_to_qpix(img: np.ndarray) -> QPixmap:
     qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
     return QPixmap.fromImage(qimg).copy()
 
+def pixmap_to_cv2(pixmap: QPixmap) -> np.ndarray:
+    """Convertit un QPixmap en image OpenCV (BGR)."""
+    qimg = pixmap.toImage()
+    qimg = qimg.convertToFormat(QImage.Format_RGBA8888)
+    width = qimg.width()
+    height = qimg.height()
+    
+    # Calculer le nombre d'octets requis
+    bytes_per_line = qimg.bytesPerLine()
+    buffer = qimg.constBits()
+    
+    # Créer le tableau numpy sans setsize
+    arr = np.array(buffer).reshape(height, width, 4)
+    
+    # Convertir RGBA en BGR
+    bgr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+    return bgr
+
+
+
 class CanvasView(QGraphicsView):
     """Preview + overlay for manual fine‑tuning."""
+
+    # Définir le signal comme variable de classe (pas dans __init__)
+    crop_changed = Signal(QRectF)
 
     def __init__(self):
         super().__init__()
@@ -37,6 +60,13 @@ class CanvasView(QGraphicsView):
         self._deltas: list[np.ndarray] = []  # 3×3 homography delta per img
         self._current_idx: int | None = None
         self._alpha = 0.5
+
+        # Ajouter après les autres initialisations
+        self._crop_mode = False
+        self._crop_rect = None
+        self._crop_start = None
+        self._crop_rect_item = None
+
 
     # ------------------------------------------------------------------ #
     def set_preview(self, images: List[np.ndarray], Hs: List[np.ndarray]):
@@ -149,7 +179,22 @@ class CanvasView(QGraphicsView):
 
     # ---------- gestion du drag souris ----------
     def mousePressEvent(self, e):
-        if self.overlay_item and e.button() == Qt.LeftButton:
+        if self._crop_mode and e.button() == Qt.LeftButton:
+            # Démarrer un nouveau rectangle de recadrage
+            self._crop_start = self.mapToScene(e.pos())
+            if self._crop_rect_item:
+                self.scene.removeItem(self._crop_rect_item)
+            
+            # Créer un nouveau rectangle vide
+            self._crop_rect = QRectF(self._crop_start, self._crop_start)
+            self._crop_rect_item = self.scene.addRect(
+                self._crop_rect,
+                QPen(QColor(255, 0, 0, 255), 2),
+                QBrush(QColor(255, 0, 0, 50))
+            )
+            e.accept()
+        elif self.overlay_item and e.button() == Qt.LeftButton:
+            # Code existant pour le dragging...
             self._dragging = True
             self._drag_start = e.pos()
             self.setCursor(Qt.ClosedHandCursor)
@@ -158,7 +203,16 @@ class CanvasView(QGraphicsView):
             super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        if self._dragging and self.overlay_item:
+        if self._crop_mode and e.buttons() & Qt.LeftButton and self._crop_start:
+            # Mettre à jour le rectangle de recadrage
+            current = self.mapToScene(e.pos())
+            self._crop_rect = QRectF(self._crop_start, current).normalized()
+            
+            if self._crop_rect_item:
+                self._crop_rect_item.setRect(self._crop_rect)
+            e.accept()
+        elif self._dragging and self.overlay_item:
+            # Code existant...
             delta = self.mapToScene(e.pos()) - self.mapToScene(self._drag_start)
             self._apply_delta(translation=(delta.x(), delta.y()))
             self._drag_start = e.pos()
@@ -167,13 +221,21 @@ class CanvasView(QGraphicsView):
             super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
-        if self._dragging and e.button() == Qt.LeftButton:
+        if self._crop_mode and e.button() == Qt.LeftButton:
+            # Finaliser le rectangle de recadrage
+            if self._crop_rect and self._crop_rect.isValid():
+                # Émettre le signal avec le rectangle final
+                self.crop_changed.emit(self._crop_rect)
+            e.accept()
+        elif self._dragging and e.button() == Qt.LeftButton:
+            # Code existant...
             self._dragging = False
             self.unsetCursor()
-            self._finalize_move()          # masque overlay + refresh preview
+            self._finalize_move()
             e.accept()
         else:
             super().mouseReleaseEvent(e)
+
 
     # ------------------------------------------------------------------ #
     def _finalize_move(self):
@@ -221,3 +283,23 @@ class CanvasView(QGraphicsView):
     def final_homographies(self) -> List[np.ndarray]:
         """Renvoie uniquement les ΔH (corrections manuelles) pour chaque image."""
         return self._deltas
+
+    def set_crop_mode(self, enabled: bool):
+        """Active ou désactive le mode de recadrage interactif."""
+        self._crop_mode = enabled
+        
+        # Supprimer le rectangle de recadrage existant si on désactive le mode
+        if not enabled and self._crop_rect_item:
+            self.scene.removeItem(self._crop_rect_item)
+            self._crop_rect_item = None
+            self._crop_rect = None
+        
+        # Changer le curseur
+        if enabled:
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.unsetCursor()
+
+    def get_crop_rect(self) -> QRectF:
+        """Renvoie le rectangle de recadrage actuel ou None."""
+        return self._crop_rect if self._crop_rect and self._crop_rect.isValid() else None

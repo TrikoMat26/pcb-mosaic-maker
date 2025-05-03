@@ -111,7 +111,31 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         try:
             imgs = [d["image"] for d in self.images_data]
-            self.homographies = self.aligner.align(imgs)
+            try:
+                self.homographies = self.aligner.align(imgs)
+            except Exception as e:
+                # Afficher l'erreur mais proposer un alignement forcé
+                rep = QMessageBox.question(
+                    self, 
+                    "Problème d'alignement", 
+                    f"{str(e)}\n\nEssayer un alignement simplifié?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if rep == QMessageBox.Yes:
+                    try:
+                        self.homographies = self.aligner.align(imgs, force_align=True, max_deformation=5.0)
+                    except Exception as e2:
+                        QMessageBox.critical(self, "Alignement impossible", str(e2))
+                        pd.close()
+                        return
+                else:
+                    QMessageBox.critical(self, "Alignement impossible", str(e))
+                    pd.close()
+                    return
+            
+
+
+
         except Exception as e:
             QMessageBox.critical(self, "Alignement impossible", str(e))
             pd.close()
@@ -122,6 +146,8 @@ class MainWindow(QMainWindow):
         self.canvas.set_preview(imgs, self.homographies)
         self.canvas.prepare_manual(imgs, self.homographies)   # NEW
         self.tools.set_canvas(self.canvas, [d["path"] for d in self.images_data])
+        self.act_export.setEnabled(True)  # Activer l'exportation
+
 
     # ------------------------------------------------------------------ #
     def export_mosaic(self):
@@ -182,8 +208,41 @@ class MainWindow(QMainWindow):
             deltas = self.canvas.final_homographies()
             H_full_corr = [d @ h for d, h in zip(deltas, H_scaled)]
 
-            mosaic = self.stitcher.stitch(imgs_full, H_full_corr, scale=scale)
+            # Récupérer les options de recadrage
+            auto_crop = self.tools.auto_crop_enabled()
+            custom_dimensions = self.tools.get_custom_dimensions()
+            crop_rect = None
 
+            if hasattr(self.canvas, "get_crop_rect"):
+                crop_rect = self.canvas.get_crop_rect()
+
+
+            # Créer la mosaïque avec le recadrage automatique si activé
+            mosaic = self.stitcher.stitch(imgs_full, H_full_corr, scale=scale, auto_crop=auto_crop)
+
+            # Appliquer le recadrage manuel si défini
+            if crop_rect and crop_rect.isValid():
+                x, y, w, h = int(crop_rect.x()), int(crop_rect.y()), int(crop_rect.width()), int(crop_rect.height())
+                # Ajuster pour le facteur d'échelle
+                x = int(x * scale)
+                y = int(y * scale)
+                w = int(w * scale)
+                h = int(h * scale)
+                
+                # Vérifier que les coordonnées sont dans l'image
+                h_img, w_img = mosaic.shape[:2]
+                x = max(0, min(x, w_img - 1))
+                y = max(0, min(y, h_img - 1))
+                w = max(1, min(w, w_img - x))
+                h = max(1, min(h, h_img - y))
+                
+                # Appliquer le recadrage
+                mosaic = mosaic[y:y+h, x:x+w]
+
+            # Redimensionner aux dimensions personnalisées si spécifiées
+            if custom_dimensions:
+                target_w, target_h = custom_dimensions
+                mosaic = cv2.resize(mosaic, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
 
         except Exception as e:
             QMessageBox.critical(self, "Erreur fusion", str(e))
