@@ -168,19 +168,22 @@ class MainWindow(QMainWindow):
             full_ref  = imgs_full[ref_idx]
             s_ref = full_ref.shape[1] / thumb_ref.shape[1]          # largeur
 
-            H_full = []
+            # homographies mises à l’échelle (vignettes ➜ résolution complète)
+            H_scaled = []
             for i, Ht in enumerate(self.homographies):
                 thumb = self.images_data[i]["image"]
                 full  = imgs_full[i]
-                s_i = full.shape[1] / thumb.shape[1]
+                s_i = full.shape[1] / thumb.shape[1]           # facteur d’agrandissement
+                H_scaled.append(
+                    np.diag([s_ref, s_ref, 1.0]) @ Ht @ np.diag([1 / s_i, 1 / s_i, 1.0])
+                )
 
-                S_ref   = np.diag([s_ref, s_ref, 1.0])
-                S_i_inv = np.diag([1 / s_i, 1 / s_i, 1.0])
+            # ΔH manuels renvoyés par le canvas (Identité si aucune correction)
+            deltas = self.canvas.final_homographies()
+            H_full_corr = [d @ h for d, h in zip(deltas, H_scaled)]
 
-                H_full.append(S_ref @ Ht @ S_i_inv)
+            mosaic = self.stitcher.stitch(imgs_full, H_full_corr, scale=scale)
 
-            H_for_export = self.canvas.final_homographies()   # includes manual deltas
-            mosaic = self.stitcher.stitch(imgs_full, H_for_export, scale=scale)
 
         except Exception as e:
             QMessageBox.critical(self, "Erreur fusion", str(e))

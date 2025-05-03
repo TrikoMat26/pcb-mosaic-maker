@@ -29,6 +29,7 @@ class CanvasView(QGraphicsView):
         self.preview_item: QGraphicsPixmapItem | None = None
         self.overlay_item: QGraphicsPixmapItem | None = None
         self._zoom = 0
+        self._dragging = False
 
         # manual‑align state
         self._images: list[np.ndarray] = []
@@ -39,13 +40,14 @@ class CanvasView(QGraphicsView):
 
     # ------------------------------------------------------------------ #
     def set_preview(self, images: List[np.ndarray], Hs: List[np.ndarray]):
-        from ..core.stitcher import Stitcher
-        preview = Stitcher(blend_mode="average").stitch(images, Hs, scale=0.25)
-        self.scene.clear()
-        self.preview_item = self.scene.addPixmap(cv2_to_qpix(preview))
+        self._images = images
+        self._Hs_thumb = Hs
+        self._deltas = [np.eye(3) for _ in images]   # réinitialise
+        self._refresh_preview()                      # ← remplace les 5 lignes d’origine
         self.setSceneRect(self.scene.itemsBoundingRect())
         self.fitInView(self.sceneRect(), Qt.KeepAspectRatio)
         self._zoom = 0
+
 
     # ------------------------------------------------------------------ #
     def prepare_manual(self, images: List[np.ndarray], Hs_thumb: List[np.ndarray]):
@@ -53,6 +55,18 @@ class CanvasView(QGraphicsView):
         self._images = images
         self._Hs_thumb = Hs_thumb
         self._deltas = [np.eye(3) for _ in images]
+
+    # ------------------------------------------------------------------ #
+    def _refresh_preview(self):
+        """Reconstruit l’aperçu basse résolution en tenant compte des ΔH."""
+        from ..core.stitcher import Stitcher
+        H_corr = [d @ h for d, h in zip(self._deltas, self._Hs_thumb)]
+        pv = Stitcher("average").stitch(self._images, H_corr, scale=0.25)
+
+        if self.preview_item is None:
+            self.preview_item = self.scene.addPixmap(cv2_to_qpix(pv))
+        else:
+            self.preview_item.setPixmap(cv2_to_qpix(pv))    
 
     # -------------------- overlay management ------------------------- #
     def select_overlay(self, idx: int):
@@ -68,6 +82,12 @@ class CanvasView(QGraphicsView):
             self.scene.removeItem(self.overlay_item)
         self.overlay_item = self.scene.addPixmap(cv2_to_qpix(quick))
         self.overlay_item.setOpacity(self._alpha)
+        self.overlay_item.setTransformOriginPoint(self.overlay_item.boundingRect().center())
+        # remet la dernière ΔH si elle existe
+        m = self._deltas[idx]
+        self.overlay_item.setTransform(QTransform(m[0,0], m[1,0],
+                                                  m[0,1], m[1,1],
+                                                  m[0,2], m[1,2]))
 
     def set_overlay_opacity(self, alpha: float):
         self._alpha = alpha
@@ -91,18 +111,77 @@ class CanvasView(QGraphicsView):
 
     def wheelEvent(self, event: QWheelEvent):
         if self._current_idx is None:
-            super().wheelEvent(event); return
+            return super().wheelEvent(event)
+
         delta = event.angleDelta().y()
-        if event.modifiers() & Qt.ShiftModifier:  # rotation
-            angle = 1 if delta > 0 else -1
-            self._apply_delta(rotation=angle)
-        elif event.modifiers() & Qt.AltModifier:  # scale
-            factor = 1.02 if delta > 0 else 0.98
-            self._apply_delta(scale=factor)
-        elif event.modifiers() & Qt.ControlModifier:  # zoom view
-            super().wheelEvent(event)
+
+        if event.modifiers() & Qt.ShiftModifier:           # rotation fine
+            raw = event.angleDelta()
+            steps = (raw.y() or raw.x()) / 120            # gère les pilotes qui n'envoient que X ou Y
+            if steps == 0:
+                return                                    # aucun mouvement
+            self._apply_delta(rotation=2 * steps)         # ±2° par cran
+            return                                        # pas de _finalize_move() ici
+   # met à jour l’aperçu
+        elif event.modifiers() & Qt.AltModifier:          # scale (zoom local)
+            raw = event.angleDelta()
+            steps = (raw.y() or raw.x()) / 120            # Nb de crans (+ / −)
+            if steps == 0:
+                return
+
+            # tient compte du défilement “naturel”
+            if event.inverted():
+                steps = -steps
+
+            factor_per_step = 1.08                        # +8 % / −8 % par cran
+            s = factor_per_step ** steps                  # agrandit ou réduit
+            self._apply_delta(scale=s)
+
+            # limites raisonnables (0.2× ↔ 6×)
+            cur_scale = abs(self._deltas[self._current_idx][0, 0])
+            if cur_scale < 0.20:
+                self._deltas[self._current_idx] *= 0.20 / cur_scale
+            elif cur_scale > 6.0:
+                self._deltas[self._current_idx] *= 6.0 / cur_scale
+
         else:
             super().wheelEvent(event)
+
+    # ---------- gestion du drag souris ----------
+    def mousePressEvent(self, e):
+        if self.overlay_item and e.button() == Qt.LeftButton:
+            self._dragging = True
+            self._drag_start = e.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            e.accept()
+        else:
+            super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._dragging and self.overlay_item:
+            delta = self.mapToScene(e.pos()) - self.mapToScene(self._drag_start)
+            self._apply_delta(translation=(delta.x(), delta.y()))
+            self._drag_start = e.pos()
+            e.accept()
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging and e.button() == Qt.LeftButton:
+            self._dragging = False
+            self.unsetCursor()
+            self._finalize_move()          # masque overlay + refresh preview
+            e.accept()
+        else:
+            super().mouseReleaseEvent(e)
+
+    # ------------------------------------------------------------------ #
+    def _finalize_move(self):
+        """Après un déplacement : met à jour le fond et cache l’overlay."""
+        self._refresh_preview()            # fond à jour
+        if self.overlay_item:
+            self.overlay_item.setOpacity(0)  # cache complètement le doublon
+
 
     # -------------------- delta homography --------------------------- #
     def _apply_delta(self, *, translation=(0,0), rotation=0.0, scale=1.0):
@@ -122,13 +201,23 @@ class CanvasView(QGraphicsView):
         else:
             S = np.eye(3)
         self._deltas[idx] = T @ R @ S @ self._deltas[idx]
+        # clamp : évite de devenir microscopique ou gigantesque
+        current_scale = self._deltas[idx][0, 0]
+        if current_scale < 0.2:
+            self._deltas[idx] *= 0.2 / current_scale
+        elif current_scale > 5.0:
+            self._deltas[idx] *= 5.0 / current_scale
+
         # move the overlay item visually
         if self.overlay_item:
             m = self._deltas[idx]
             qtf = QTransform(m[0,0], m[1,0], m[0,1], m[1,1], m[0,2], m[1,2])
             self.overlay_item.setTransform(qtf)
+            # met à jour la pré-visualisation générale
+            self._refresh_preview()
+
 
     # ------------------------------------------------------------------ #
     def final_homographies(self) -> List[np.ndarray]:
-        """Return H_final = delta × H_thumb for export."""
-        return [d @ h for d, h in zip(self._deltas, self._Hs_thumb)]
+        """Renvoie uniquement les ΔH (corrections manuelles) pour chaque image."""
+        return self._deltas
