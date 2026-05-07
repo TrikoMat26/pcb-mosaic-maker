@@ -1115,8 +1115,10 @@ const App = {
     const T=[1,0,tx,0,1,ty,0,0,1];
     const Hs_T = Hs.map(h=>matMul3(T,h));
 
-    // Cap canvas for preview to avoid OOM (multiband heavy)
-    const MAX_PREVIEW = 5000;
+    // Cap canvas for preview to avoid OOM. WASM heap is ~256 MB and a
+    // multiband Laplacian pyramid eats ~21·W·H bytes per image — drop the
+    // cap aggressively (used to be 5000, far too big for N≥4).
+    const MAX_PREVIEW = 2500;
     let scaleDown = 1;
     if(Math.max(W,H) > MAX_PREVIEW){
       scaleDown = MAX_PREVIEW/Math.max(W,H);
@@ -1131,205 +1133,232 @@ const App = {
     // (warpToCanvas) can reuse the SAME frame and stay aligned with the base.
     this._stitchFrame = {tx, ty, scaleDown, W:finalW, H:finalH};
 
+    // Memory budget heuristic: if N·W·H exceeds ~6 Mpix, multiband pyramids
+    // would exceed the WASM heap. Skip multiband and start at feather.
+    const totalPix = N * finalW * finalH;
+    const MULTIBAND_BUDGET = 6_000_000;
+    if(mode==='multiband' && totalPix > MULTIBAND_BUDGET){
+      console.info(`Multiband désactivé (${(totalPix/1e6).toFixed(1)} Mpx > ${MULTIBAND_BUDGET/1e6} Mpx) — fallback feather d'office.`);
+      mode = 'feather';
+    }
+
     updateBusy(`Warping ${N} images…`, 30);
     await sleep(0);
 
-    // Warp each image + create soft mask
+    // Warp each image + create soft mask. Wrapped in try/finally so any
+    // exception (OOM during warp, blend, …) still releases the Mats —
+    // critical because WASM heap has no GC.
     const warpedMats = [];
     const maskMats = [];
-    for(let i=0;i<N;i++){
-      updateBusy(`Image ${i+1}/${N}`, 30 + 30*i/N);
-      await sleep(0);
-      const src = cv2.imread(canvases[i]);
-      const Hmat = cv2.matFromArray(3,3, cv2.CV_64F, Hs_S[i]);
-      const dst = new cv2.Mat();
-      cv2.warpPerspective(src, dst, Hmat, new cv2.Size(finalW, finalH), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
-      // Build mask from alpha channel of warped
-      const channels = new cv2.MatVector();
-      cv2.split(dst, channels);
-      const alpha = channels.get(3).clone();
-      // Erode then distanceTransform for feathering
-      const k=cv2.Mat.ones(3,3,cv2.CV_8U);
-      cv2.erode(alpha, alpha, k);
-      const dist = new cv2.Mat();
-      cv2.distanceTransform(alpha, dist, cv2.DIST_L2, 3);
-      // Normalize 0-1 with cap
-      const cap = 60.0;
-      cv2.threshold(dist, dist, cap, cap, cv2.THRESH_TRUNC);
-      cv2.normalize(dist, dist, 0, 1, cv2.NORM_MINMAX);
-      // Convert dst to RGB (drop alpha)
-      const rgb = new cv2.Mat();
-      cv2.cvtColor(dst, rgb, cv2.COLOR_RGBA2RGB);
-      warpedMats.push(rgb);
-      maskMats.push(dist);
-      src.delete(); Hmat.delete(); dst.delete();
-      channels.get(0).delete(); channels.get(1).delete(); channels.get(2).delete();
-      alpha.delete(); channels.delete(); k.delete();
-    }
-
     let blended = null;
-    updateBusy('Fusion…', 70);
-    await sleep(0);
-    const runBlend = async (m) => {
-      if(m==='multiband') return await this.multibandBlend(warpedMats, maskMats);
-      if(m==='feather' || m==='average') return this.featherBlend(warpedMats, maskMats);
-      return this.overlayBlend(warpedMats, maskMats);
-    };
-    const cascade = (mode==='multiband') ? ['multiband','feather','overlay']
-                  : (mode==='feather' || mode==='average') ? ['feather','overlay']
-                  : ['overlay'];
-    let lastErr = null;
-    for(const m of cascade){
-      try { blended = await runBlend(m); break; }
-      catch(e){
-        lastErr = e;
-        console.warn(`Blend "${m}" a échoué :`, cvErr(e));
-        if(m !== mode) updateBusy(`Fusion "${m}" KO, tentative suivante…`, 75);
+    try {
+      for(let i=0;i<N;i++){
+        updateBusy(`Image ${i+1}/${N}`, 30 + 30*i/N);
+        await sleep(0);
+        const src = cv2.imread(canvases[i]);
+        const Hmat = cv2.matFromArray(3,3, cv2.CV_64F, Hs_S[i]);
+        const dst = new cv2.Mat();
+        cv2.warpPerspective(src, dst, Hmat, new cv2.Size(finalW, finalH), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
+        const channels = new cv2.MatVector();
+        cv2.split(dst, channels);
+        const alpha = channels.get(3).clone();
+        const k=cv2.Mat.ones(3,3,cv2.CV_8U);
+        cv2.erode(alpha, alpha, k);
+        const dist = new cv2.Mat();
+        cv2.distanceTransform(alpha, dist, cv2.DIST_L2, 3);
+        const cap = 60.0;
+        cv2.threshold(dist, dist, cap, cap, cv2.THRESH_TRUNC);
+        cv2.normalize(dist, dist, 0, 1, cv2.NORM_MINMAX);
+        const rgb = new cv2.Mat();
+        cv2.cvtColor(dst, rgb, cv2.COLOR_RGBA2RGB);
+        warpedMats.push(rgb);
+        maskMats.push(dist);
+        src.delete(); Hmat.delete(); dst.delete();
+        channels.get(0).delete(); channels.get(1).delete(); channels.get(2).delete();
+        alpha.delete(); channels.delete(); k.delete();
       }
-    }
-    if(!blended) throw new Error('Toutes les méthodes de fusion ont échoué : '+cvErr(lastErr));
 
-    // Output canvas
-    const out = document.createElement('canvas');
-    out.width = blended.cols; out.height = blended.rows;
-    cv2.imshow(out, blended);
-    blended.delete();
-    warpedMats.forEach(m=>m.delete());
-    maskMats.forEach(m=>m.delete());
-    return out;
+      updateBusy('Fusion…', 70);
+      await sleep(0);
+      const runBlend = async (m) => {
+        if(m==='multiband') return await this.multibandBlend(warpedMats, maskMats);
+        if(m==='feather' || m==='average') return this.featherBlend(warpedMats, maskMats);
+        return this.overlayBlend(warpedMats, maskMats);
+      };
+      const cascade = (mode==='multiband') ? ['multiband','feather','overlay']
+                    : (mode==='feather' || mode==='average') ? ['feather','overlay']
+                    : ['overlay'];
+      let lastErr = null;
+      for(const m of cascade){
+        try { blended = await runBlend(m); break; }
+        catch(e){
+          lastErr = e;
+          console.warn(`Blend "${m}" a échoué :`, cvErr(e));
+          updateBusy(`Fusion "${m}" KO, tentative suivante…`, 75);
+          await sleep(50); // give the heap a tick to settle
+        }
+      }
+      if(!blended) throw new Error('Toutes les méthodes de fusion ont échoué : '+cvErr(lastErr));
+
+      const out = document.createElement('canvas');
+      out.width = blended.cols; out.height = blended.rows;
+      cv2.imshow(out, blended);
+      return out;
+    } finally {
+      if(blended) try{ blended.delete(); }catch(_){}
+      warpedMats.forEach(m=>{ try{ m.delete(); }catch(_){} });
+      maskMats.forEach(m=>{ try{ m.delete(); }catch(_){} });
+    }
   },
 
   overlayBlend(imgs, masks){
     const cv2=cv;
     const result = new cv2.Mat(imgs[0].rows, imgs[0].cols, cv2.CV_8UC3, new cv2.Scalar(0,0,0));
     const filled = new cv2.Mat(imgs[0].rows, imgs[0].cols, cv2.CV_8UC1, new cv2.Scalar(0));
-    const refIdx = this.refIdx>=0?this.refIdx:0;
-    const order=[refIdx];
-    for(let i=0;i<imgs.length;i++) if(i!==refIdx) order.push(i);
-    for(const i of order){
-      const m=masks[i];
-      const m8 = new cv2.Mat();
-      m.convertTo(m8, cv2.CV_8U, 255);
-      const newpix = new cv2.Mat();
-      const inv = new cv2.Mat();
-      cv2.bitwise_not(filled, inv);
-      cv2.bitwise_and(m8, inv, newpix);
-      const partial = new cv2.Mat();
-      imgs[i].copyTo(partial, newpix);
-      cv2.add(result, partial, result);
-      cv2.bitwise_or(filled, m8, filled);
-      m8.delete(); inv.delete(); newpix.delete(); partial.delete();
+    let success = false;
+    try {
+      const refIdx = this.refIdx>=0?this.refIdx:0;
+      const order=[refIdx];
+      for(let i=0;i<imgs.length;i++) if(i!==refIdx) order.push(i);
+      for(const i of order){
+        const m=masks[i];
+        const m8 = new cv2.Mat();
+        m.convertTo(m8, cv2.CV_8U, 255);
+        const newpix = new cv2.Mat();
+        const inv = new cv2.Mat();
+        cv2.bitwise_not(filled, inv);
+        cv2.bitwise_and(m8, inv, newpix);
+        const partial = new cv2.Mat();
+        imgs[i].copyTo(partial, newpix);
+        cv2.add(result, partial, result);
+        cv2.bitwise_or(filled, m8, filled);
+        m8.delete(); inv.delete(); newpix.delete(); partial.delete();
+      }
+      success = true;
+      return result;
+    } finally {
+      try{ filled.delete(); }catch(_){}
+      if(!success) try{ result.delete(); }catch(_){}
     }
-    filled.delete();
-    return result;
   },
 
   featherBlend(imgs, masks){
     const cv2=cv;
     const H=imgs[0].rows, W=imgs[0].cols;
-    // Sum (img * mask) / sum (mask)
     const acc = new cv2.Mat(H, W, cv2.CV_32FC3, new cv2.Scalar(0,0,0));
     const wsum = new cv2.Mat(H, W, cv2.CV_32FC1, new cv2.Scalar(0));
-    for(let i=0;i<imgs.length;i++){
-      const f32 = new cv2.Mat();
-      imgs[i].convertTo(f32, cv2.CV_32FC3);
-      // multiply each channel by mask
-      const ch = new cv2.MatVector();
-      cv2.split(f32, ch);
-      for(let c=0;c<3;c++) cv2.multiply(ch.get(c), masks[i], ch.get(c));
-      const merged = new cv2.Mat();
-      cv2.merge(ch, merged);
-      cv2.add(acc, merged, acc);
-      cv2.add(wsum, masks[i], wsum);
-      f32.delete();
-      ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
-      merged.delete();
+    let out = null, wsafe = null, chFinal = null;
+    let out8 = null;
+    let success = false;
+    try {
+      for(let i=0;i<imgs.length;i++){
+        const f32 = new cv2.Mat();
+        imgs[i].convertTo(f32, cv2.CV_32FC3);
+        const ch = new cv2.MatVector();
+        cv2.split(f32, ch);
+        for(let c=0;c<3;c++) cv2.multiply(ch.get(c), masks[i], ch.get(c));
+        const merged = new cv2.Mat();
+        cv2.merge(ch, merged);
+        cv2.add(acc, merged, acc);
+        cv2.add(wsum, masks[i], wsum);
+        f32.delete();
+        ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+        merged.delete();
+      }
+      out = new cv2.Mat(H, W, cv2.CV_32FC3);
+      chFinal = new cv2.MatVector();
+      cv2.split(acc, chFinal);
+      wsafe = new cv2.Mat();
+      cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, wsafe);
+      for(let c=0;c<3;c++) cv2.divide(chFinal.get(c), wsafe, chFinal.get(c));
+      cv2.merge(chFinal, out);
+      out8 = new cv2.Mat();
+      out.convertTo(out8, cv2.CV_8UC3);
+      success = true;
+      return out8;
+    } finally {
+      try{ acc.delete(); }catch(_){}
+      try{ wsum.delete(); }catch(_){}
+      if(wsafe) try{ wsafe.delete(); }catch(_){}
+      if(out) try{ out.delete(); }catch(_){}
+      if(chFinal){
+        try{ chFinal.get(0).delete(); chFinal.get(1).delete(); chFinal.get(2).delete(); }catch(_){}
+        try{ chFinal.delete(); }catch(_){}
+      }
+      if(!success && out8) try{ out8.delete(); }catch(_){}
     }
-    // divide (avoid div by 0 by adding tiny constant via addWeighted)
-    const out = new cv2.Mat(H, W, cv2.CV_32FC3);
-    const ch = new cv2.MatVector();
-    cv2.split(acc, ch);
-    const wsafe = new cv2.Mat();
-    cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, wsafe);
-    for(let c=0;c<3;c++) cv2.divide(ch.get(c), wsafe, ch.get(c));
-    cv2.merge(ch, out);
-    const out8 = new cv2.Mat();
-    out.convertTo(out8, cv2.CV_8UC3);
-    acc.delete(); wsum.delete(); wsafe.delete(); out.delete();
-    ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
-    return out8;
   },
 
   async multibandBlend(imgs, masks){
     const cv2=cv;
     const levels = 4;
-    // Build Laplacian pyramid for each image, Gaussian for each mask
-    const lapPyrs=[]; const gauPyrs=[];
-    for(let i=0;i<imgs.length;i++){
-      updateBusy(`Pyramide ${i+1}/${imgs.length}`, 70 + 15*i/imgs.length);
-      await sleep(0);
-      const f = new cv2.Mat();
-      imgs[i].convertTo(f, cv2.CV_32FC3);
-      lapPyrs.push(buildLaplacianPyr(f, levels));
-      f.delete();
-      gauPyrs.push(buildGaussianPyr(masks[i], levels));
-    }
-    // Blend at each level
-    const blendedPyr=[];
-    for(let lv=0; lv<=levels; lv++){
-      const sample = lapPyrs[0][lv];
-      const accum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC3, new cv2.Scalar(0,0,0));
-      const wsum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC1, new cv2.Scalar(0));
+    const lapPyrs=[]; const gauPyrs=[]; const blendedPyr=[];
+    let cur = null;
+    let out = null;
+    let success = false;
+    try {
       for(let i=0;i<imgs.length;i++){
-        const lap = lapPyrs[i][lv];
-        const m = gauPyrs[i][lv];
-        // Resize mask if shape mismatch (some platforms have off-by-one)
-        let mFit = m;
-        let mTmp=null;
-        if(m.cols!==lap.cols || m.rows!==lap.rows){
-          mTmp = new cv2.Mat();
-          cv2.resize(m, mTmp, new cv2.Size(lap.cols, lap.rows));
-          mFit = mTmp;
-        }
-        const ch = new cv2.MatVector();
-        cv2.split(lap, ch);
-        for(let c=0;c<3;c++) cv2.multiply(ch.get(c), mFit, ch.get(c));
-        const w = new cv2.Mat(); cv2.merge(ch, w);
-        cv2.add(accum, w, accum);
-        cv2.add(wsum, mFit, wsum);
-        ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
-        w.delete();
-        if(mTmp) mTmp.delete();
+        updateBusy(`Pyramide ${i+1}/${imgs.length}`, 70 + 15*i/imgs.length);
+        await sleep(0);
+        const f = new cv2.Mat();
+        imgs[i].convertTo(f, cv2.CV_32FC3);
+        lapPyrs.push(buildLaplacianPyr(f, levels));
+        f.delete();
+        gauPyrs.push(buildGaussianPyr(masks[i], levels));
       }
-      // Divide
-      const safe=new cv2.Mat();
-      cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, safe);
-      const ch = new cv2.MatVector();
-      cv2.split(accum, ch);
-      for(let c=0;c<3;c++) cv2.divide(ch.get(c), safe, ch.get(c));
-      const merged=new cv2.Mat(); cv2.merge(ch, merged);
-      blendedPyr.push(merged);
-      accum.delete(); wsum.delete(); safe.delete();
-      ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+      for(let lv=0; lv<=levels; lv++){
+        const sample = lapPyrs[0][lv];
+        const accum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC3, new cv2.Scalar(0,0,0));
+        const wsum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC1, new cv2.Scalar(0));
+        for(let i=0;i<imgs.length;i++){
+          const lap = lapPyrs[i][lv];
+          const m = gauPyrs[i][lv];
+          let mFit = m, mTmp=null;
+          if(m.cols!==lap.cols || m.rows!==lap.rows){
+            mTmp = new cv2.Mat();
+            cv2.resize(m, mTmp, new cv2.Size(lap.cols, lap.rows));
+            mFit = mTmp;
+          }
+          const ch = new cv2.MatVector();
+          cv2.split(lap, ch);
+          for(let c=0;c<3;c++) cv2.multiply(ch.get(c), mFit, ch.get(c));
+          const w = new cv2.Mat(); cv2.merge(ch, w);
+          cv2.add(accum, w, accum);
+          cv2.add(wsum, mFit, wsum);
+          ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+          w.delete();
+          if(mTmp) mTmp.delete();
+        }
+        const safe=new cv2.Mat();
+        cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, safe);
+        const ch = new cv2.MatVector();
+        cv2.split(accum, ch);
+        for(let c=0;c<3;c++) cv2.divide(ch.get(c), safe, ch.get(c));
+        const merged=new cv2.Mat(); cv2.merge(ch, merged);
+        blendedPyr.push(merged);
+        accum.delete(); wsum.delete(); safe.delete();
+        ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+      }
+      cur = blendedPyr[blendedPyr.length-1].clone();
+      for(let lv=blendedPyr.length-2; lv>=0; lv--){
+        const up=new cv2.Mat();
+        cv2.pyrUp(cur, up, new cv2.Size(blendedPyr[lv].cols, blendedPyr[lv].rows));
+        const sum=new cv2.Mat();
+        cv2.add(up, blendedPyr[lv], sum);
+        cur.delete(); up.delete();
+        cur = sum;
+      }
+      out = new cv2.Mat();
+      cur.convertTo(out, cv2.CV_8UC3);
+      success = true;
+      return out;
+    } finally {
+      if(cur) try{ cur.delete(); }catch(_){}
+      blendedPyr.forEach(m=>{ try{ m.delete(); }catch(_){} });
+      lapPyrs.forEach(p=>p.forEach(m=>{ try{ m.delete(); }catch(_){} }));
+      gauPyrs.forEach(p=>p.forEach(m=>{ try{ m.delete(); }catch(_){} }));
+      if(!success && out) try{ out.delete(); }catch(_){}
     }
-    // Reconstruct
-    let cur = blendedPyr[blendedPyr.length-1].clone();
-    for(let lv=blendedPyr.length-2; lv>=0; lv--){
-      const up=new cv2.Mat();
-      cv2.pyrUp(cur, up, new cv2.Size(blendedPyr[lv].cols, blendedPyr[lv].rows));
-      const sum=new cv2.Mat();
-      cv2.add(up, blendedPyr[lv], sum);
-      cur.delete(); up.delete();
-      cur = sum;
-    }
-    // Clip and convert
-    const out = new cv2.Mat();
-    cur.convertTo(out, cv2.CV_8UC3);
-    cur.delete();
-    blendedPyr.forEach(m=>m.delete());
-    lapPyrs.forEach(p=>p.forEach(m=>m.delete()));
-    gauPyrs.forEach(p=>p.forEach(m=>m.delete()));
-    return out;
   },
 
   /* ====================== View / draw ====================== */
