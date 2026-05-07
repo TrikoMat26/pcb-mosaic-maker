@@ -1,0 +1,2359 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PCB-Mosaic-Maker — Inspection PCB</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1f232c; --line:#2a2f3a;
+    --txt:#e6e9ef; --muted:#8a93a6; --accent:#3ea6ff; --accent2:#7c5cff;
+    --ok:#3ddc97; --warn:#ffb454; --err:#ff5d6c;
+    --shadow:0 6px 18px rgba(0,0,0,.35);
+    --radius:8px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--txt);font:13px/1.4 system-ui,Segoe UI,Roboto,Inter,Arial,sans-serif;overflow:hidden}
+  button,select,input{font:inherit;color:inherit}
+  button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:6px;cursor:pointer;transition:all .12s}
+  button:hover:not(:disabled){background:#272d39;border-color:#3a4150}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:linear-gradient(180deg,#3ea6ff,#2d7ee0);border-color:#2d7ee0;color:#fff;font-weight:600}
+  button.primary:hover{filter:brightness(1.08)}
+  button.danger{background:#3a1d22;border-color:#5a2a30;color:#ffb1b8}
+  input[type=file]{display:none}
+  input[type=text],input[type=number]{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 8px;color:var(--txt);width:100%}
+  input[type=range]{width:100%}
+  select{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+
+  /* Layout */
+  #app{display:grid;grid-template-rows:48px 1fr 26px;grid-template-columns:240px 1fr 320px;height:100vh;
+       grid-template-areas:"header header header" "left main right" "status status status"}
+  header.topbar{grid-area:header;display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header.topbar h1{font-size:14px;margin:0;letter-spacing:.3px;color:#fff}
+  header.topbar .sep{flex:1}
+  header.topbar .badge{font-size:11px;color:var(--muted);background:var(--panel2);padding:2px 7px;border-radius:10px;border:1px solid var(--line)}
+  header.topbar .pill{font-size:11px;padding:3px 8px;border-radius:10px}
+  header.topbar .pill.ok{background:#0f3826;color:#7eecbb;border:1px solid #1d6444}
+  header.topbar .pill.warn{background:#3a2a10;color:#ffd591;border:1px solid #6c4a1a}
+  header.topbar .pill.err{background:#3a1015;color:#ffb1b8;border:1px solid #6c1a25}
+
+  aside.left{grid-area:left;background:var(--panel);border-right:1px solid var(--line);overflow:auto;display:flex;flex-direction:column}
+  aside.right{grid-area:right;background:var(--panel);border-left:1px solid var(--line);overflow:auto;display:flex;flex-direction:column}
+  main.canvas-area{grid-area:main;position:relative;background:#0a0c10;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  footer.status{grid-area:status;background:var(--panel);border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;font-size:11px;color:var(--muted);gap:14px}
+
+  .group{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .group h3{margin:0 0 8px 0;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600}
+  .group .row{display:flex;gap:6px;align-items:center;margin:6px 0}
+  .group label{font-size:11px;color:var(--muted)}
+  .small{font-size:11px;color:var(--muted)}
+
+  /* Image list */
+  .img-list{display:flex;flex-direction:column;gap:4px}
+  .img-item{display:flex;align-items:center;gap:8px;padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--panel2);cursor:pointer;user-select:none}
+  .img-item:hover{border-color:#3a4150}
+  .img-item.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .img-item .thumb{width:48px;height:36px;background:#000;border-radius:4px;object-fit:cover;flex:0 0 48px}
+  .img-item .meta{flex:1;min-width:0}
+  .img-item .name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .img-item .size{font-size:10px;color:var(--muted)}
+  .img-item .ref-badge{background:#2a3a52;color:#7fb3ff;font-size:9px;padding:1px 5px;border-radius:8px}
+
+  /* Drop zone */
+  .dropzone{border:2px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--muted);cursor:pointer;transition:all .15s}
+  .dropzone:hover,.dropzone.drag{border-color:var(--accent);color:var(--txt);background:rgba(62,166,255,.06)}
+  .dropzone .icon{font-size:24px;display:block;margin-bottom:6px}
+
+  /* Tools toolbar over canvas */
+  .canvas-toolbar{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:4px;z-index:10}
+  .canvas-toolbar button{width:36px;height:36px;padding:0;display:flex;align-items:center;justify-content:center;background:rgba(23,26,33,.92);border:1px solid var(--line);font-size:14px}
+  .canvas-toolbar button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .canvas-toolbar .sep{height:1px;background:var(--line);margin:3px 0}
+
+  .zoom-bar{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:rgba(23,26,33,.92);border:1px solid var(--line);border-radius:20px;padding:4px 10px;z-index:10}
+  .zoom-bar button{padding:2px 8px;font-size:12px;background:transparent;border:none}
+  .zoom-bar .zoom-val{min-width:50px;text-align:center;font-variant-numeric:tabular-nums}
+
+  /* Tabs (right panel) */
+  .tabs{display:flex;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .tabs button{flex:1;border:none;border-radius:0;padding:8px 4px;background:transparent;border-bottom:2px solid transparent;font-size:11px}
+  .tabs button.active{border-bottom-color:var(--accent);background:var(--panel);color:var(--accent)}
+
+  .tab-content{display:none;padding:0}
+  .tab-content.active{display:block}
+
+  /* Annotations list */
+  .annot-list{display:flex;flex-direction:column;gap:4px;max-height:240px;overflow:auto}
+  .annot-item{display:flex;align-items:center;gap:6px;padding:5px 6px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;cursor:pointer}
+  .annot-item:hover{border-color:#3a4150}
+  .annot-item.active{border-color:var(--accent)}
+  .annot-item .swatch{width:14px;height:14px;border-radius:3px;flex:0 0 14px}
+  .annot-item .label{flex:1;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .annot-item .num{font-size:10px;background:#2a3a52;color:#7fb3ff;padding:1px 5px;border-radius:8px;font-variant-numeric:tabular-nums}
+  .annot-item button.del{padding:2px 5px;font-size:10px;color:var(--err);background:transparent;border:none}
+
+  /* Loading modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(10,12,16,.85);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(2px)}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 30px;min-width:300px;max-width:540px;box-shadow:var(--shadow)}
+  .modal h2{margin:0 0 10px 0;font-size:16px}
+  .modal p{margin:6px 0;color:var(--muted)}
+  .modal .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+  .spinner{width:24px;height:24px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;display:inline-block;vertical-align:middle;margin-right:10px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .progress-bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:8px}
+  .progress-bar > div{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s}
+
+  /* Loupe */
+  .loupe{position:absolute;border:2px solid var(--accent);border-radius:50%;pointer-events:none;box-shadow:0 0 0 2px rgba(62,166,255,.2),0 8px 22px rgba(0,0,0,.6);z-index:50;display:none;overflow:hidden;background:#000}
+  .loupe canvas{position:absolute;top:0;left:0}
+  .loupe .crosshair{position:absolute;top:50%;left:50%;width:18px;height:18px;border-radius:50%;border:1px solid rgba(255,255,255,.7);transform:translate(-50%,-50%);pointer-events:none}
+
+  /* Filters */
+  .slider-row{display:grid;grid-template-columns:80px 1fr 36px;gap:6px;align-items:center;margin:4px 0}
+  .slider-row label{font-size:11px;color:var(--muted)}
+  .slider-row .v{font-size:11px;color:var(--accent);text-align:right;font-variant-numeric:tabular-nums}
+
+  /* Empty state */
+  .empty-state{text-align:center;color:var(--muted);padding:40px 20px}
+  .empty-state .big-icon{font-size:48px;display:block;margin-bottom:12px;opacity:.5}
+
+  /* Color picker chips */
+  .color-row{display:flex;gap:4px;flex-wrap:wrap}
+  .color-chip{width:22px;height:22px;border-radius:50%;cursor:pointer;border:2px solid transparent}
+  .color-chip.active{border-color:#fff}
+
+  kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:1px 5px;font-size:10px;font-family:ui-monospace,Menlo,monospace}
+
+  details summary{cursor:pointer;padding:4px 0;color:var(--muted);font-size:11px;user-select:none}
+  details summary:hover{color:var(--txt)}
+
+  .hint{background:rgba(62,166,255,.06);border:1px solid rgba(62,166,255,.2);border-radius:6px;padding:8px;font-size:11px;color:#bcd9f7}
+
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:var(--panel)}
+  ::-webkit-scrollbar-thumb{background:#2a2f3a;border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:#3a4150}
+
+  .float-right{float:right}
+  .icon-btn{padding:4px 7px;font-size:11px}
+  .stack-v{display:flex;flex-direction:column;gap:4px}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- ============================== HEADER ============================== -->
+  <header class="topbar">
+    <h1>🔬 PCB-Mosaic-Maker</h1>
+    <span class="badge" id="cv-status">OpenCV.js : chargement…</span>
+    <span class="sep"></span>
+    <span id="header-info" class="small"></span>
+    <button id="btn-help" title="Aide / raccourcis">?</button>
+    <button id="btn-save-project" title="Sauvegarder le projet (.pcbm.json)">💾 Projet</button>
+    <button id="btn-load-project" title="Charger un projet">📂</button>
+    <button id="btn-export" class="primary" disabled title="Exporter la mosaïque">⬇ Exporter</button>
+  </header>
+
+  <!-- ============================== LEFT PANEL ============================== -->
+  <aside class="left">
+    <div class="group">
+      <h3>Photos source</h3>
+      <div class="dropzone" id="dropzone">
+        <span class="icon">📷</span>
+        <div>Glissez 2 à 10 photos<br/>ou cliquez pour choisir</div>
+        <div class="small" style="margin-top:4px">JPG / PNG / TIF — collage Ctrl+V supporté</div>
+      </div>
+      <input type="file" id="file-input" accept="image/*" multiple />
+      <div class="row" style="margin-top:8px">
+        <button id="btn-clear" class="icon-btn" disabled>Vider</button>
+        <button id="btn-align" class="primary icon-btn" disabled>Aligner</button>
+      </div>
+    </div>
+
+    <div class="group" style="flex:1">
+      <h3>Liste (<span id="img-count">0</span>) <span class="small float-right">L'image au centre = référence</span></h3>
+      <div class="img-list" id="img-list"></div>
+    </div>
+
+    <div class="group">
+      <h3>Étape</h3>
+      <div class="stack-v">
+        <div class="small" id="step-status">1. Charger les photos</div>
+        <div class="progress-bar"><div id="global-progress" style="width:0%"></div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================== MAIN CANVAS AREA ============================== -->
+  <main class="canvas-area" id="canvas-area">
+    <!-- Empty state -->
+    <div class="empty-state" id="empty-state">
+      <span class="big-icon">🧩</span>
+      <div style="font-size:15px;color:var(--txt)">Aucune mosaïque</div>
+      <p>Glissez des photos PCB dans le panneau de gauche pour commencer</p>
+    </div>
+
+    <!-- Canvases stacked -->
+    <canvas id="cv-base" style="position:absolute;display:none"></canvas>
+    <canvas id="cv-overlay" style="position:absolute;display:none;pointer-events:none"></canvas>
+    <canvas id="cv-annot" style="position:absolute;display:none"></canvas>
+    <svg id="svg-tools" style="position:absolute;display:none;pointer-events:none" width="100%" height="100%"></svg>
+
+    <!-- Toolbar -->
+    <div class="canvas-toolbar" id="canvas-toolbar" style="display:none">
+      <button data-tool="pan" class="active" title="Déplacer (P)">✥</button>
+      <button data-tool="loupe" title="Loupe (L)">🔍</button>
+      <div class="sep"></div>
+      <button data-tool="annot-circle" title="Cercle de défaut (C)">○</button>
+      <button data-tool="annot-arrow" title="Flèche (A)">↗</button>
+      <button data-tool="annot-rect" title="Rectangle (R)">▭</button>
+      <button data-tool="annot-text" title="Étiquette texte (T)">T</button>
+      <div class="sep"></div>
+      <button data-tool="measure" title="Mesure (M)">📏</button>
+      <button data-tool="calibrate" title="Calibrer (K)">🎯</button>
+      <div class="sep"></div>
+      <button id="btn-fit" title="Ajuster (F)">⤢</button>
+      <button id="btn-100" title="100% (1)">1:1</button>
+    </div>
+
+    <!-- Zoom bar -->
+    <div class="zoom-bar" id="zoom-bar" style="display:none">
+      <button id="btn-zoom-out">−</button>
+      <span class="zoom-val" id="zoom-val">100%</span>
+      <button id="btn-zoom-in">+</button>
+    </div>
+
+    <!-- Loupe overlay -->
+    <div class="loupe" id="loupe">
+      <canvas id="loupe-canvas"></canvas>
+      <div class="crosshair"></div>
+    </div>
+  </main>
+
+  <!-- ============================== RIGHT PANEL ============================== -->
+  <aside class="right">
+    <div class="tabs">
+      <button data-tab="align" class="active">Align.</button>
+      <button data-tab="filters">Filtres</button>
+      <button data-tab="annot">Défauts</button>
+      <button data-tab="ab">A/B</button>
+      <button data-tab="export">Export</button>
+    </div>
+
+    <!-- ===== Tab: Manual alignment ===== -->
+    <div class="tab-content active" id="tab-align">
+      <div class="group">
+        <h3>Alignement manuel</h3>
+        <div class="hint">Sélectionnez une image dans la liste de gauche, puis affinez avec le clavier ou la souris. La référence (au centre) reste fixe.</div>
+        <div class="slider-row">
+          <label>Opacité</label>
+          <input type="range" id="overlay-alpha" min="0" max="100" value="50" />
+          <span class="v" id="overlay-alpha-val">50%</span>
+        </div>
+        <details open>
+          <summary>Raccourcis</summary>
+          <div class="small" style="line-height:1.7">
+            <kbd>←↑↓→</kbd> translation 1px<br/>
+            <kbd>Shift</kbd>+flèche : ×10<br/>
+            <kbd>Shift</kbd>+molette : rotation 1°<br/>
+            <kbd>Alt</kbd>+molette : échelle ×1.02<br/>
+            <kbd>Ctrl</kbd>+molette : zoom vue<br/>
+            <kbd>R</kbd> reset image active<br/>
+            <kbd>Espace</kbd> bascule overlay
+          </div>
+        </details>
+        <div class="row" style="margin-top:8px">
+          <button id="btn-reset-active" class="icon-btn">Reset image</button>
+          <button id="btn-reset-all" class="icon-btn">Reset tout</button>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Algorithme</h3>
+        <div class="slider-row">
+          <label>Détecteur</label>
+          <select id="detector-sel" style="grid-column:span 2">
+            <option value="sift">SIFT (précis)</option>
+            <option value="orb">ORB (rapide)</option>
+            <option value="akaze">AKAZE</option>
+          </select>
+        </div>
+        <div class="slider-row">
+          <label>Ratio test</label>
+          <input type="range" id="ratio-test" min="50" max="90" value="70" />
+          <span class="v" id="ratio-test-val">0.70</span>
+        </div>
+        <div class="slider-row">
+          <label>RANSAC</label>
+          <input type="range" id="ransac-thr" min="10" max="80" value="30" />
+          <span class="v" id="ransac-thr-val">3.0</span>
+        </div>
+        <div class="slider-row">
+          <label>Blend</label>
+          <select id="blend-mode" style="grid-column:span 2">
+            <option value="multiband">Multiband Laplacian</option>
+            <option value="feather">Feathering simple</option>
+            <option value="average">Moyenne</option>
+            <option value="overlay">Empilage (rapide)</option>
+          </select>
+        </div>
+        <button id="btn-rebuild-preview" class="icon-btn" style="width:100%;margin-top:6px">Recalculer la preview</button>
+      </div>
+    </div>
+
+    <!-- ===== Tab: Filters ===== -->
+    <div class="tab-content" id="tab-filters">
+      <div class="group">
+        <h3>Visualisation (non destructif)</h3>
+        <div class="slider-row"><label>Luminosité</label><input type="range" id="f-bright" min="-100" max="100" value="0"/><span class="v" id="f-bright-v">0</span></div>
+        <div class="slider-row"><label>Contraste</label><input type="range" id="f-contrast" min="-100" max="200" value="0"/><span class="v" id="f-contrast-v">0</span></div>
+        <div class="slider-row"><label>Saturation</label><input type="range" id="f-sat" min="-100" max="200" value="0"/><span class="v" id="f-sat-v">0</span></div>
+        <div class="slider-row"><label>Gamma</label><input type="range" id="f-gamma" min="30" max="300" value="100"/><span class="v" id="f-gamma-v">1.0</span></div>
+        <div class="slider-row"><label>Netteté</label><input type="range" id="f-sharp" min="0" max="100" value="0"/><span class="v" id="f-sharp-v">0</span></div>
+        <div class="row" style="margin-top:8px">
+          <label><input type="checkbox" id="f-invert"/> Inverser</label>
+          <label><input type="checkbox" id="f-gray"/> N&B</label>
+          <label><input type="checkbox" id="f-edge"/> Contours</label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="f-clahe"/> CLAHE (équilibrage local)</label>
+        </div>
+        <button id="btn-reset-filters" class="icon-btn" style="width:100%;margin-top:8px">Réinitialiser filtres</button>
+      </div>
+      <div class="group">
+        <h3>Loupe</h3>
+        <div class="slider-row"><label>Taille</label><input type="range" id="loupe-size" min="120" max="400" value="220"/><span class="v" id="loupe-size-v">220</span></div>
+        <div class="slider-row"><label>Zoom</label><input type="range" id="loupe-zoom" min="2" max="20" value="6"/><span class="v" id="loupe-zoom-v">6×</span></div>
+        <div class="hint">Activez l'outil 🔍 dans la barre du canvas (ou touche L) puis survolez une zone suspecte.</div>
+      </div>
+    </div>
+
+    <!-- ===== Tab: Annotations ===== -->
+    <div class="tab-content" id="tab-annot">
+      <div class="group">
+        <h3>Type de défaut</h3>
+        <select id="defect-type" style="width:100%">
+          <option>Soudure froide</option>
+          <option>Pont de soudure</option>
+          <option>Bille / projection</option>
+          <option>Composant manquant</option>
+          <option>Composant inversé</option>
+          <option>Composant décalé</option>
+          <option>Composant erroné</option>
+          <option>Tombstoning</option>
+          <option>Pollution / corps étranger</option>
+          <option>Décollement / lifting</option>
+          <option>Rayure / casse PCB</option>
+          <option>Erreur sérigraphie</option>
+          <option>Autre</option>
+        </select>
+        <div class="slider-row" style="margin-top:8px">
+          <label>Couleur</label>
+          <div class="color-row" id="color-row" style="grid-column:span 2"></div>
+        </div>
+        <div class="slider-row">
+          <label>Épaisseur</label>
+          <input type="range" id="annot-thick" min="1" max="12" value="3"/>
+          <span class="v" id="annot-thick-v">3</span>
+        </div>
+        <div class="hint">Choisissez un outil (○ ↗ ▭ T) puis cliquez-glissez sur la mosaïque.</div>
+      </div>
+      <div class="group" style="flex:1">
+        <h3>Liste des défauts (<span id="annot-count">0</span>)</h3>
+        <div class="annot-list" id="annot-list"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="btn-clear-annot" class="icon-btn">Tout effacer</button>
+          <button id="btn-renumber" class="icon-btn">Renuméroter</button>
+        </div>
+      </div>
+      <div class="group">
+        <h3>Calibration</h3>
+        <div id="calib-info" class="small">Aucune calibration. Utilisez l'outil 🎯 pour tracer une distance connue.</div>
+        <div class="row" style="margin-top:6px">
+          <button id="btn-clear-calib" class="icon-btn">Effacer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Tab: A/B ===== -->
+    <div class="tab-content" id="tab-ab">
+      <div class="group">
+        <h3>Carte de référence (Golden board)</h3>
+        <div class="hint">Chargez une image de référence (PCB conforme, photo ou export CAO) pour comparer onion-skin / split.</div>
+        <div class="dropzone" id="ref-drop">
+          <span class="icon">📋</span>
+          <div>Charger une image de référence</div>
+        </div>
+        <input type="file" id="ref-file" accept="image/*"/>
+        <div class="slider-row" style="margin-top:8px">
+          <label>Mode</label>
+          <select id="ab-mode" style="grid-column:span 2">
+            <option value="off">Désactivé</option>
+            <option value="onion">Onion-skin (transparence)</option>
+            <option value="split-h">Split horizontal</option>
+            <option value="split-v">Split vertical</option>
+            <option value="diff">Différence absolue</option>
+          </select>
+        </div>
+        <div class="slider-row">
+          <label>Opacité</label>
+          <input type="range" id="ab-alpha" min="0" max="100" value="50"/>
+          <span class="v" id="ab-alpha-v">50%</span>
+        </div>
+        <div class="slider-row">
+          <label>Position split</label>
+          <input type="range" id="ab-split" min="0" max="100" value="50"/>
+          <span class="v" id="ab-split-v">50%</span>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="btn-align-ref" class="icon-btn">Aligner sur la mosaïque</button>
+          <button id="btn-clear-ref" class="icon-btn">Retirer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Tab: Export ===== -->
+    <div class="tab-content" id="tab-export">
+      <div class="group">
+        <h3>Image fusionnée</h3>
+        <div class="slider-row"><label>Format</label>
+          <select id="exp-format" style="grid-column:span 2">
+            <option value="jpg">JPEG (qualité réglable)</option>
+            <option value="png">PNG (sans perte)</option>
+          </select>
+        </div>
+        <div class="slider-row"><label>Qualité</label><input type="range" id="exp-q" min="70" max="100" value="92"/><span class="v" id="exp-q-v">92</span></div>
+        <div class="slider-row"><label>Échelle</label>
+          <select id="exp-scale" style="grid-column:span 2">
+            <option value="1">×1</option>
+            <option value="1.5">×1.5</option>
+            <option value="2" selected>×2 (HD)</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        <div class="slider-row" id="exp-custom-row" style="display:none">
+          <label>px largeur</label>
+          <input type="number" id="exp-custom" min="500" max="20000" value="6000"/>
+          <span></span>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="exp-with-annot" checked/> Inclure annotations</label>
+        </div>
+        <button id="btn-export-img" class="primary" style="width:100%;margin-top:8px" disabled>Télécharger l'image</button>
+      </div>
+      <div class="group">
+        <h3>Rapport d'inspection</h3>
+        <div class="slider-row"><label>Référence carte</label><input type="text" id="rep-ref" placeholder="Ex. CTRL-PSU-V1.2"/><span></span></div>
+        <div class="slider-row"><label>N° série</label><input type="text" id="rep-sn" placeholder="Ex. SN-0042"/><span></span></div>
+        <div class="slider-row"><label>Opérateur</label><input type="text" id="rep-op" placeholder="Votre nom"/><span></span></div>
+        <div class="slider-row"><label>Verdict</label>
+          <select id="rep-verdict" style="grid-column:span 2">
+            <option value="pending">À statuer</option>
+            <option value="ok">Conforme</option>
+            <option value="rework">Retouche possible</option>
+            <option value="ko">Non conforme</option>
+          </select>
+        </div>
+        <textarea id="rep-notes" placeholder="Observations générales…" style="width:100%;min-height:60px;background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:6px;margin-top:6px"></textarea>
+        <div class="stack-v" style="margin-top:8px">
+          <button id="btn-export-pdf" class="primary" disabled>📄 Rapport HTML/PDF</button>
+          <button id="btn-export-json" disabled>📋 Données JSON</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============================== STATUS BAR ============================== -->
+  <footer class="status">
+    <span id="st-coords">x:- y:- </span>
+    <span id="st-tool">Outil : Déplacer</span>
+    <span id="st-canvas-size">—</span>
+    <span class="sep" style="flex:1"></span>
+    <span id="st-msg" class="small"></span>
+  </footer>
+</div>
+
+<!-- ===== Loading modal ===== -->
+<div class="modal-bg" id="loading-modal">
+  <div class="modal">
+    <h2><span class="spinner"></span>Chargement d'OpenCV.js…</h2>
+    <p id="loading-detail">Première ouverture : téléchargement du moteur de vision (~10 Mo). Une fois en cache, l'application fonctionne hors-ligne.</p>
+    <p class="small" id="loading-fallback" style="display:none;color:var(--warn)">⚠ CDN inaccessible. Placez le fichier <code>opencv.js</code> à côté de l'HTML pour fonctionner sans réseau.</p>
+  </div>
+</div>
+
+<!-- ===== Help modal ===== -->
+<div class="modal-bg" id="help-modal" style="display:none">
+  <div class="modal" style="max-width:680px">
+    <h2>Guide d'utilisation</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+      <div>
+        <h3 style="font-size:12px;color:var(--accent);margin:8px 0 4px">Workflow</h3>
+        <ol style="padding-left:18px;line-height:1.7">
+          <li>Glissez 2 à 10 photos PCB qui se chevauchent</li>
+          <li>Cliquez <b>Aligner</b></li>
+          <li>Affinez chaque image dans l'onglet <b>Align.</b></li>
+          <li>Annotez les défauts avec ○ ↗ ▭ T</li>
+          <li>Calibrez (🎯) puis mesurez (📏) si besoin</li>
+          <li>Exportez l'image et/ou le rapport</li>
+        </ol>
+      </div>
+      <div>
+        <h3 style="font-size:12px;color:var(--accent);margin:8px 0 4px">Raccourcis clavier</h3>
+        <div style="line-height:1.7;font-size:12px">
+          <kbd>P</kbd> Déplacer · <kbd>L</kbd> Loupe<br/>
+          <kbd>C</kbd> Cercle · <kbd>A</kbd> Flèche · <kbd>R</kbd> Rect · <kbd>T</kbd> Texte<br/>
+          <kbd>M</kbd> Mesure · <kbd>K</kbd> Calibrer<br/>
+          <kbd>F</kbd> Ajuster · <kbd>1</kbd> 100%<br/>
+          <kbd>←↑↓→</kbd> nudge image active (alignement)<br/>
+          <kbd>Shift</kbd>+flèche : ×10 px<br/>
+          <kbd>Shift</kbd>+molette : rotation<br/>
+          <kbd>Alt</kbd>+molette : échelle<br/>
+          <kbd>Ctrl</kbd>+molette : zoom vue<br/>
+          <kbd>Espace</kbd> : bascule overlay<br/>
+          <kbd>Suppr</kbd> : supprime annotation sélectionnée<br/>
+          <kbd>Échap</kbd> : annule outil en cours
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button onclick="document.getElementById('help-modal').style.display='none'">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Generic info / progress modal ===== -->
+<div class="modal-bg" id="busy-modal" style="display:none">
+  <div class="modal">
+    <h2 id="busy-title"><span class="spinner"></span><span id="busy-title-text">Traitement…</span></h2>
+    <p id="busy-msg">Veuillez patienter.</p>
+    <div class="progress-bar"><div id="busy-progress" style="width:0%"></div></div>
+  </div>
+</div>
+
+<!-- ===== Text annotation prompt ===== -->
+<div class="modal-bg" id="text-modal" style="display:none">
+  <div class="modal">
+    <h2 id="text-modal-title">Étiquette</h2>
+    <input type="text" id="text-modal-input" placeholder="Texte de l'annotation" style="margin:8px 0"/>
+    <div class="actions">
+      <button onclick="App.textPrompt.cancel()">Annuler</button>
+      <button class="primary" onclick="App.textPrompt.confirm()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     OpenCV.js loader: try local file first, then CDN
+============================================================ -->
+<script>
+  (function loadOpenCV(){
+    function tryLocal(){
+      const s=document.createElement('script');
+      s.src='./opencv.js';
+      s.async=true;
+      s.onerror=tryCDN;
+      document.head.appendChild(s);
+    }
+    function tryCDN(){
+      document.getElementById('loading-detail').textContent='Téléchargement depuis le CDN docs.opencv.org…';
+      const s=document.createElement('script');
+      s.src='https://docs.opencv.org/4.8.0/opencv.js';
+      s.async=true;
+      s.onerror=()=>{
+        document.getElementById('loading-fallback').style.display='block';
+        document.getElementById('loading-detail').textContent='Échec du téléchargement.';
+      };
+      document.head.appendChild(s);
+    }
+    tryLocal();
+    // Hook for runtime ready
+    window.Module = window.Module || {};
+    const origInit = window.Module.onRuntimeInitialized;
+    window.Module.onRuntimeInitialized = function(){
+      if(typeof origInit==='function') origInit();
+      App && App.onCvReady();
+    };
+  })();
+</script>
+
+<!-- ============================================================
+     APP CODE
+============================================================ -->
+<script>
+"use strict";
+
+/* ====================== Helpers ====================== */
+const $ = id => document.getElementById(id);
+const setText = (id,t)=>{const e=$(id); if(e) e.textContent=t;};
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const debounce = (fn,ms)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};};
+const downloadBlob = (blob, filename)=>{
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();}, 100);
+};
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+function showBusy(title, msg, progress=null){
+  $('busy-title-text').textContent = title;
+  $('busy-msg').textContent = msg||'';
+  $('busy-modal').style.display = 'flex';
+  if(progress!==null) $('busy-progress').style.width = progress+'%';
+}
+function updateBusy(msg, progress){
+  if(msg!==undefined) $('busy-msg').textContent = msg;
+  if(progress!==undefined) $('busy-progress').style.width = progress+'%';
+}
+function hideBusy(){ $('busy-modal').style.display='none'; }
+
+function setStatus(msg){ $('st-msg').textContent = msg||''; }
+
+/* ====================== EXIF orientation ====================== */
+async function readExifOrientation(blob){
+  // Lightweight EXIF reader for JPEG orientation tag (0x0112)
+  if(!blob || blob.size < 100) return 1;
+  try{
+    const buf = await blob.slice(0, 65536).arrayBuffer();
+    const v = new DataView(buf);
+    if(v.getUint16(0)!==0xFFD8) return 1;
+    let off = 2;
+    while(off < v.byteLength){
+      const marker = v.getUint16(off); off+=2;
+      const size = v.getUint16(off); off+=2;
+      if(marker===0xFFE1){ // APP1
+        if(v.getUint32(off)!==0x45786966) return 1;
+        const tiff = off + 6;
+        const little = v.getUint16(tiff)===0x4949;
+        const get16=p=>v.getUint16(p, little);
+        const get32=p=>v.getUint32(p, little);
+        if(get16(tiff+2)!==0x002A) return 1;
+        const ifd = tiff + get32(tiff+4);
+        const num = get16(ifd);
+        for(let i=0;i<num;i++){
+          const e = ifd + 2 + i*12;
+          if(get16(e)===0x0112) return get16(e+8);
+        }
+        return 1;
+      } else {
+        off += size - 2;
+      }
+    }
+  }catch(e){}
+  return 1;
+}
+
+function applyOrientationToImage(img, orientation){
+  // Returns a canvas with EXIF orientation applied
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  if(orientation>=5 && orientation<=8){ c.width=h; c.height=w; } else { c.width=w; c.height=h; }
+  switch(orientation){
+    case 2: ctx.translate(w,0); ctx.scale(-1,1); break;
+    case 3: ctx.translate(w,h); ctx.rotate(Math.PI); break;
+    case 4: ctx.translate(0,h); ctx.scale(1,-1); break;
+    case 5: ctx.rotate(.5*Math.PI); ctx.scale(1,-1); break;
+    case 6: ctx.rotate(.5*Math.PI); ctx.translate(0,-h); break;
+    case 7: ctx.rotate(.5*Math.PI); ctx.translate(w,-h); ctx.scale(-1,1); break;
+    case 8: ctx.rotate(-.5*Math.PI); ctx.translate(-w,0); break;
+    default: break;
+  }
+  ctx.drawImage(img, 0, 0);
+  return c;
+}
+
+/* ====================== App state ====================== */
+const App = {
+  cvReady:false,
+  images:[],          // [{file,name,bitmap (HTMLCanvas), thumb (HTMLCanvas), thumbScale, orientation}]
+  refIdx:-1,
+  homographies:[],    // 3x3 thumbnail homographies
+  deltas:[],          // user deltas per image (3x3)
+  blendedThumb:null,  // canvas
+  finalCanvas:null,   // canvas (last full export)
+  refImage:null,      // {bitmap, alignH} for A/B
+  abMode:'off',
+  filters:{bright:0,contrast:0,sat:0,gamma:1,sharp:0,invert:false,gray:false,edge:false,clahe:false},
+  annotations:[],     // {id,type:'circle|arrow|rect|text',x,y,x2,y2,color,thick,label,number,note}
+  calibration:null,   // {pxPerMm, p1, p2, mm}
+  view:{ scale:1, tx:0, ty:0, fitScale:1 },
+  tool:'pan',
+  selectedAnnot:-1,
+  drag:{active:false},
+  selectedImage:-1,
+  alpha:0.5,
+  COLORS:['#ff5d6c','#ffb454','#ffd700','#3ddc97','#3ea6ff','#7c5cff','#ff5dc8','#ffffff','#000000'],
+  activeColor:'#ff5d6c',
+  thick:3,
+
+  /* === Lifecycle === */
+  init(){
+    this.bindUI();
+    this.populateColors();
+    this.updateStep();
+    this.refreshImageList();
+    this.refreshAnnotList();
+    this.updateLoupeSize();
+    this.setTool('pan');
+  },
+
+  onCvReady(){
+    this.cvReady=true;
+    $('cv-status').textContent = 'OpenCV.js : prêt ✓';
+    $('cv-status').classList.remove('warn');
+    setTimeout(()=>{ $('loading-modal').style.display='none'; }, 200);
+    setStatus('OpenCV chargé. Glissez des photos PCB pour démarrer.');
+  },
+
+  /* === UI binding === */
+  bindUI(){
+    /* Drop zone */
+    const dz = $('dropzone');
+    dz.onclick = ()=>$('file-input').click();
+    $('file-input').onchange = e=>this.addImages([...e.target.files]);
+    ;['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.classList.add('drag');}));
+    ;['dragleave','drop'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.classList.remove('drag');}));
+    dz.addEventListener('drop', e=>{ this.addImages([...(e.dataTransfer.files||[])].filter(f=>f.type.startsWith('image/'))); });
+
+    /* Paste */
+    document.addEventListener('paste', e=>{
+      const items=[...(e.clipboardData?.items||[])].filter(i=>i.type.startsWith('image/'));
+      const files=items.map(i=>i.getAsFile()).filter(Boolean);
+      if(files.length) this.addImages(files);
+    });
+
+    /* Buttons */
+    $('btn-clear').onclick = ()=>this.clearAll();
+    $('btn-align').onclick = ()=>this.runAlignment();
+    $('btn-export').onclick = ()=>this.tabSwitch('export');
+    $('btn-help').onclick = ()=>{ $('help-modal').style.display='flex'; };
+    $('btn-save-project').onclick = ()=>this.saveProject();
+    $('btn-load-project').onclick = ()=>this.loadProjectFile();
+    $('btn-rebuild-preview').onclick = ()=>this.buildPreview();
+    $('btn-reset-active').onclick = ()=>{ if(this.selectedImage>=0){this.deltas[this.selectedImage]=[1,0,0,0,1,0,0,0,1]; this.buildPreview();}};
+    $('btn-reset-all').onclick = ()=>{ this.deltas=this.deltas.map(_=>[1,0,0,0,1,0,0,0,1]); this.buildPreview();};
+    $('btn-fit').onclick = ()=>this.fitView();
+    $('btn-100').onclick = ()=>this.setZoom(1);
+    $('btn-zoom-in').onclick = ()=>this.setZoom(this.view.scale*1.25);
+    $('btn-zoom-out').onclick = ()=>this.setZoom(this.view.scale/1.25);
+
+    /* Sliders / selects */
+    const bind = (id, valId, fmt=v=>v)=>{
+      const el = $(id), out = $(valId);
+      const upd = ()=>out.textContent = fmt(el.value);
+      el.addEventListener('input', upd); upd();
+    };
+    bind('overlay-alpha','overlay-alpha-val', v=>v+'%');
+    $('overlay-alpha').addEventListener('input', e=>{ this.alpha = e.target.value/100; this.redraw(); });
+    bind('ratio-test','ratio-test-val', v=>(v/100).toFixed(2));
+    bind('ransac-thr','ransac-thr-val', v=>(v/10).toFixed(1));
+    bind('exp-q','exp-q-v');
+    bind('annot-thick','annot-thick-v');
+    $('annot-thick').addEventListener('input', e=>{this.thick=+e.target.value;});
+    bind('loupe-size','loupe-size-v');
+    bind('loupe-zoom','loupe-zoom-v', v=>v+'×');
+    $('loupe-size').addEventListener('input',()=>this.updateLoupeSize());
+    /* Filter sliders */
+    ['bright','contrast','sat','gamma','sharp'].forEach(k=>{
+      const id='f-'+k, vid=id+'-v';
+      const el=$(id);
+      el.addEventListener('input',()=>{
+        this.filters[k] = (k==='gamma')? +el.value/100 : +el.value;
+        $(vid).textContent = (k==='gamma')? (+el.value/100).toFixed(2): el.value;
+        this.scheduleRedraw();
+      });
+      $(vid).textContent = (k==='gamma')?'1.00': el.value;
+    });
+    ['invert','gray','edge','clahe'].forEach(k=>{
+      $('f-'+k).addEventListener('change', e=>{ this.filters[k]=e.target.checked; this.scheduleRedraw(); });
+    });
+    $('btn-reset-filters').onclick = ()=>this.resetFilters();
+
+    /* Tabs */
+    document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>this.tabSwitch(b.dataset.tab));
+
+    /* Tool buttons */
+    document.querySelectorAll('.canvas-toolbar button[data-tool]').forEach(b=>{
+      b.onclick = ()=>this.setTool(b.dataset.tool);
+    });
+
+    /* Export */
+    $('exp-scale').addEventListener('change', e=>{
+      $('exp-custom-row').style.display = (e.target.value==='custom')?'grid':'none';
+    });
+    $('btn-export-img').onclick = ()=>this.exportImage();
+    $('btn-export-pdf').onclick = ()=>this.exportReport();
+    $('btn-export-json').onclick = ()=>this.exportJSON();
+
+    /* Annotations */
+    $('btn-clear-annot').onclick = ()=>{ if(confirm('Effacer toutes les annotations ?')){this.annotations=[]; this.refreshAnnotList(); this.redraw();} };
+    $('btn-renumber').onclick = ()=>{ this.annotations.forEach((a,i)=>a.number=i+1); this.refreshAnnotList(); this.redraw(); };
+    $('btn-clear-calib').onclick = ()=>{ this.calibration=null; this.updateCalibInfo(); };
+
+    /* A/B */
+    $('ref-drop').onclick = ()=>$('ref-file').click();
+    $('ref-file').onchange = async e=>{ if(e.target.files[0]) await this.loadReference(e.target.files[0]); };
+    $('ab-mode').addEventListener('change', e=>{ this.abMode=e.target.value; this.redraw(); });
+    bind('ab-alpha','ab-alpha-v', v=>v+'%');
+    $('ab-alpha').addEventListener('input',()=>this.redraw());
+    bind('ab-split','ab-split-v', v=>v+'%');
+    $('ab-split').addEventListener('input',()=>this.redraw());
+    $('btn-clear-ref').onclick = ()=>{ this.refImage=null; this.abMode='off'; $('ab-mode').value='off'; this.redraw(); };
+    $('btn-align-ref').onclick = ()=>this.alignReference();
+
+    /* Canvas events */
+    this.bindCanvasEvents();
+
+    /* Keyboard */
+    document.addEventListener('keydown', e=>this.onKeydown(e));
+  },
+
+  populateColors(){
+    const row=$('color-row');
+    row.innerHTML='';
+    this.COLORS.forEach(c=>{
+      const d=document.createElement('div');
+      d.className='color-chip'+(c===this.activeColor?' active':'');
+      d.style.background=c;
+      d.onclick=()=>{
+        this.activeColor=c;
+        document.querySelectorAll('.color-chip').forEach(x=>x.classList.remove('active'));
+        d.classList.add('active');
+      };
+      row.appendChild(d);
+    });
+  },
+
+  tabSwitch(tab){
+    document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+    document.querySelectorAll('.tab-content').forEach(c=>c.classList.toggle('active', c.id==='tab-'+tab));
+  },
+
+  /* === Image input === */
+  async addImages(files){
+    if(!files || !files.length) return;
+    if(this.images.length + files.length > 10){
+      alert('Maximum 10 photos.'); return;
+    }
+    showBusy('Chargement', 'Décodage des images…', 0);
+    for(let i=0;i<files.length;i++){
+      const f=files[i];
+      updateBusy(`${f.name} (${i+1}/${files.length})`, (i/files.length)*100);
+      const orientation = await readExifOrientation(f);
+      const url = URL.createObjectURL(f);
+      const img = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=url; });
+      const fullCanvas = applyOrientationToImage(img, orientation);
+      // Create thumb capped at 2048 px
+      const cap = 2048;
+      let tw=fullCanvas.width, th=fullCanvas.height;
+      const sc = Math.min(1, cap/Math.max(tw,th));
+      const thumb = document.createElement('canvas');
+      thumb.width = Math.round(tw*sc); thumb.height = Math.round(th*sc);
+      thumb.getContext('2d').drawImage(fullCanvas, 0,0, thumb.width, thumb.height);
+      this.images.push({
+        file:f, name:f.name, bitmap:fullCanvas, thumb, thumbScale:sc, orientation
+      });
+      URL.revokeObjectURL(url);
+    }
+    hideBusy();
+    this.refIdx = Math.floor(this.images.length/2);
+    this.deltas = this.images.map(_=>[1,0,0,0,1,0,0,0,1]);
+    this.refreshImageList();
+    this.updateStep();
+    $('btn-clear').disabled = false;
+    $('btn-align').disabled = this.images.length<2;
+    if(this.images.length>=2) setStatus(`${this.images.length} images prêtes. Cliquez "Aligner".`);
+  },
+
+  clearAll(){
+    if(!confirm('Tout réinitialiser ?')) return;
+    this.images=[]; this.homographies=[]; this.deltas=[]; this.blendedThumb=null;
+    this.annotations=[]; this.calibration=null; this.refImage=null;
+    this.refIdx=-1; this.selectedImage=-1;
+    this.refreshImageList(); this.refreshAnnotList(); this.updateCalibInfo();
+    $('cv-base').style.display='none';
+    $('cv-overlay').style.display='none';
+    $('cv-annot').style.display='none';
+    $('canvas-toolbar').style.display='none';
+    $('zoom-bar').style.display='none';
+    $('empty-state').style.display='block';
+    $('btn-clear').disabled = $('btn-align').disabled = $('btn-export').disabled = true;
+    $('btn-export-img').disabled = $('btn-export-pdf').disabled = $('btn-export-json').disabled = true;
+    this.updateStep();
+  },
+
+  refreshImageList(){
+    const list=$('img-list'); list.innerHTML='';
+    $('img-count').textContent = this.images.length;
+    this.images.forEach((im,i)=>{
+      const div=document.createElement('div');
+      div.className='img-item'+(i===this.selectedImage?' active':'');
+      const c=document.createElement('canvas'); c.className='thumb';
+      c.width=48; c.height=36;
+      c.getContext('2d').drawImage(im.thumb, 0,0, 48, 36);
+      div.appendChild(c);
+      const meta=document.createElement('div'); meta.className='meta';
+      const n=document.createElement('div'); n.className='name'; n.textContent=im.name; meta.appendChild(n);
+      const s=document.createElement('div'); s.className='size'; s.textContent=`${im.bitmap.width}×${im.bitmap.height}`; meta.appendChild(s);
+      div.appendChild(meta);
+      if(i===this.refIdx){
+        const r=document.createElement('span'); r.className='ref-badge'; r.textContent='REF'; div.appendChild(r);
+      }
+      div.onclick = ()=>{
+        this.selectedImage = i;
+        this.refreshImageList();
+        this.redraw();
+      };
+      list.appendChild(div);
+    });
+  },
+
+  updateStep(){
+    let step;
+    if(!this.cvReady) step = '0. Chargement OpenCV…';
+    else if(this.images.length<2) step = '1. Charger 2-10 photos';
+    else if(!this.homographies.length) step = '2. Cliquer "Aligner"';
+    else step = '3. Affiner • annoter • exporter';
+    setText('step-status', step);
+    let p=0;
+    if(this.cvReady) p=20;
+    if(this.images.length>=2) p=40;
+    if(this.homographies.length) p=70;
+    if(this.annotations.length || this.calibration) p=85;
+    $('global-progress').style.width = p+'%';
+    setText('header-info', this.images.length? `${this.images.length} photos${this.homographies.length?' • alignées':''}` : '');
+  },
+
+  /* ====================== Alignment (OpenCV) ====================== */
+  async runAlignment(){
+    if(!this.cvReady){ alert('OpenCV pas encore prêt'); return; }
+    if(this.images.length<2){ alert('2 images minimum'); return; }
+    this.refIdx = Math.floor(this.images.length/2);
+    showBusy('Alignement automatique', 'Détection des points clés…', 5);
+    await sleep(30); // let UI repaint
+    try{
+      const detector = $('detector-sel').value;
+      const ratio = +$('ratio-test').value/100;
+      const ransac = +$('ransac-thr').value/10;
+      this.homographies = await this.computeHomographies(detector, ratio, ransac);
+      hideBusy();
+      this.deltas = this.images.map(_=>[1,0,0,0,1,0,0,0,1]);
+      await this.buildPreview();
+      $('btn-export').disabled = false;
+      $('btn-export-img').disabled = false;
+      $('btn-export-pdf').disabled = false;
+      $('btn-export-json').disabled = false;
+      this.selectedImage = this.refIdx;
+      this.refreshImageList();
+      this.updateStep();
+      setStatus('Alignement terminé. Affinez si besoin (flèches sur image sélectionnée).');
+    }catch(e){
+      hideBusy();
+      alert('Échec alignement : '+e.message);
+      console.error(e);
+    }
+  },
+
+  async computeHomographies(detectorName, ratio, ransac){
+    const cv2 = cv;
+    const N = this.images.length;
+    const refIdx = this.refIdx;
+    const Hs = new Array(N);
+    Hs[refIdx] = [1,0,0,0,1,0,0,0,1];
+
+    // Build feature detector
+    let detector, normType;
+    if(detectorName==='orb'){
+      detector = new cv2.ORB(4000);
+      normType = cv2.NORM_HAMMING;
+    } else if(detectorName==='akaze'){
+      detector = new cv2.AKAZE();
+      normType = cv2.NORM_HAMMING;
+    } else {
+      detector = new cv2.SIFT();
+      normType = cv2.NORM_L2;
+    }
+
+    // Cache features
+    const feats = [];
+    for(let i=0;i<N;i++){
+      updateBusy(`Features image ${i+1}/${N}…`, 5+25*i/N);
+      await sleep(0);
+      const mat = cv2.imread(this.images[i].thumb);
+      const gray = new cv2.Mat();
+      cv2.cvtColor(mat, gray, cv2.COLOR_RGBA2GRAY);
+      const kp = new cv2.KeyPointVector();
+      const des = new cv2.Mat();
+      detector.detectAndCompute(gray, new cv2.Mat(), kp, des);
+      mat.delete(); gray.delete();
+      feats.push({kp, des});
+    }
+
+    const matcher = new cv2.BFMatcher(normType, false);
+
+    for(let i=0;i<N;i++){
+      if(i===refIdx) continue;
+      updateBusy(`Matching ${i+1}/${N}…`, 30 + 60*i/N);
+      await sleep(0);
+      const f1 = feats[i], f2 = feats[refIdx];
+      if(f1.des.rows < 4 || f2.des.rows < 4){
+        throw new Error(`Pas assez de features image ${i+1}`);
+      }
+      const knn = new cv2.DMatchVectorVector();
+      matcher.knnMatch(f1.des, f2.des, knn, 2);
+      const goodA=[], goodB=[];
+      for(let k=0;k<knn.size();k++){
+        const v = knn.get(k);
+        if(v.size()<2){ v.delete(); continue; }
+        const m=v.get(0), n=v.get(1);
+        if(m.distance < ratio * n.distance){
+          const p1 = f1.kp.get(m.queryIdx).pt;
+          const p2 = f2.kp.get(m.trainIdx).pt;
+          goodA.push(p1.x, p1.y);
+          goodB.push(p2.x, p2.y);
+        }
+        v.delete();
+      }
+      knn.delete();
+      if(goodA.length < 8){
+        throw new Error(`Matching insuffisant entre image ${i+1} et la référence (${goodA.length/2} pts)`);
+      }
+      const srcMat = cv2.matFromArray(goodA.length/2, 1, cv2.CV_32FC2, goodA);
+      const dstMat = cv2.matFromArray(goodB.length/2, 1, cv2.CV_32FC2, goodB);
+      const mask = new cv2.Mat();
+      const H = cv2.findHomography(srcMat, dstMat, cv2.RANSAC, ransac, mask);
+      if(H.empty()){
+        H.delete(); srcMat.delete(); dstMat.delete(); mask.delete();
+        throw new Error(`Homographie impossible image ${i+1}`);
+      }
+      Hs[i] = [...H.data64F];
+      H.delete(); srcMat.delete(); dstMat.delete(); mask.delete();
+    }
+
+    // Cleanup
+    feats.forEach(f=>{ f.kp.delete(); f.des.delete(); });
+    matcher.delete(); detector.delete();
+
+    return Hs;
+  },
+
+  /* ====================== Stitching ====================== */
+  async buildPreview(){
+    if(!this.images.length || !this.homographies.length) return;
+    showBusy('Fusion preview', 'Calcul du canvas…', 10);
+    await sleep(20);
+    try{
+      const blendMode = $('blend-mode').value;
+      const Hs_eff = this.homographies.map((H,i)=>matMul3(this.deltas[i], H));
+      const result = await this.stitch(this.images.map(im=>im.thumb), Hs_eff, blendMode);
+      this.blendedThumb = result;
+      this._advFilterCached = null;
+      this._overlayCacheIdx = -1;
+      this.fitView(true);
+      this.redraw();
+      hideBusy();
+    }catch(e){
+      hideBusy();
+      alert('Erreur fusion : '+e.message);
+      console.error(e);
+    }
+  },
+
+  async stitch(canvases, Hs, mode='multiband'){
+    const cv2 = cv;
+    const N = canvases.length;
+    // Compute canvas bounding box
+    let xmin=Infinity, ymin=Infinity, xmax=-Infinity, ymax=-Infinity;
+    for(let i=0;i<N;i++){
+      const w=canvases[i].width, h=canvases[i].height;
+      const corners=[[0,0],[w,0],[w,h],[0,h]];
+      for(const [x,y] of corners){
+        const [xp,yp] = applyHom(Hs[i], x, y);
+        if(xp<xmin)xmin=xp; if(yp<ymin)ymin=yp;
+        if(xp>xmax)xmax=xp; if(yp>ymax)ymax=yp;
+      }
+    }
+    const tx=-Math.floor(xmin), ty=-Math.floor(ymin);
+    const W=Math.ceil(xmax-xmin), H=Math.ceil(ymax-ymin);
+    const T=[1,0,tx,0,1,ty,0,0,1];
+    const Hs_T = Hs.map(h=>matMul3(T,h));
+
+    // Cap canvas for preview to avoid OOM (multiband heavy)
+    const MAX_PREVIEW = 5000;
+    let scaleDown = 1;
+    if(Math.max(W,H) > MAX_PREVIEW){
+      scaleDown = MAX_PREVIEW/Math.max(W,H);
+    }
+    const finalW = Math.round(W*scaleDown), finalH = Math.round(H*scaleDown);
+    const Hs_S = Hs_T.map(h=>{
+      const S=[scaleDown,0,0,0,scaleDown,0,0,0,1];
+      return matMul3(S,h);
+    });
+
+    updateBusy(`Warping ${N} images…`, 30);
+    await sleep(0);
+
+    // Warp each image + create soft mask
+    const warpedMats = [];
+    const maskMats = [];
+    for(let i=0;i<N;i++){
+      updateBusy(`Image ${i+1}/${N}`, 30 + 30*i/N);
+      await sleep(0);
+      const src = cv2.imread(canvases[i]);
+      const Hmat = cv2.matFromArray(3,3, cv2.CV_64F, Hs_S[i]);
+      const dst = new cv2.Mat();
+      cv2.warpPerspective(src, dst, Hmat, new cv2.Size(finalW, finalH), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
+      // Build mask from alpha channel of warped
+      const channels = new cv2.MatVector();
+      cv2.split(dst, channels);
+      const alpha = channels.get(3).clone();
+      // Erode then distanceTransform for feathering
+      const k=cv2.Mat.ones(3,3,cv2.CV_8U);
+      cv2.erode(alpha, alpha, k);
+      const dist = new cv2.Mat();
+      cv2.distanceTransform(alpha, dist, cv2.DIST_L2, 3);
+      // Normalize 0-1 with cap
+      const cap = 60.0;
+      cv2.threshold(dist, dist, cap, cap, cv2.THRESH_TRUNC);
+      cv2.normalize(dist, dist, 0, 1, cv2.NORM_MINMAX);
+      // Convert dst to RGB (drop alpha)
+      const rgb = new cv2.Mat();
+      cv2.cvtColor(dst, rgb, cv2.COLOR_RGBA2RGB);
+      warpedMats.push(rgb);
+      maskMats.push(dist);
+      src.delete(); Hmat.delete(); dst.delete();
+      channels.get(0).delete(); channels.get(1).delete(); channels.get(2).delete();
+      alpha.delete(); channels.delete(); k.delete();
+    }
+
+    let blended;
+    updateBusy('Fusion…', 70);
+    await sleep(0);
+    try{
+      if(mode==='multiband'){
+        blended = await this.multibandBlend(warpedMats, maskMats);
+      } else if(mode==='feather' || mode==='average'){
+        blended = this.featherBlend(warpedMats, maskMats);
+      } else { // overlay
+        blended = this.overlayBlend(warpedMats, maskMats);
+      }
+    }catch(e){
+      console.warn('blend fallback:', e.message);
+      blended = this.overlayBlend(warpedMats, maskMats);
+    }
+
+    // Output canvas
+    const out = document.createElement('canvas');
+    out.width = blended.cols; out.height = blended.rows;
+    cv2.imshow(out, blended);
+    blended.delete();
+    warpedMats.forEach(m=>m.delete());
+    maskMats.forEach(m=>m.delete());
+    return out;
+  },
+
+  overlayBlend(imgs, masks){
+    const cv2=cv;
+    const result = new cv2.Mat(imgs[0].rows, imgs[0].cols, cv2.CV_8UC3, new cv2.Scalar(0,0,0));
+    const filled = new cv2.Mat(imgs[0].rows, imgs[0].cols, cv2.CV_8UC1, new cv2.Scalar(0));
+    const refIdx = this.refIdx>=0?this.refIdx:0;
+    const order=[refIdx];
+    for(let i=0;i<imgs.length;i++) if(i!==refIdx) order.push(i);
+    for(const i of order){
+      const m=masks[i];
+      const m8 = new cv2.Mat();
+      m.convertTo(m8, cv2.CV_8U, 255);
+      const newpix = new cv2.Mat();
+      const inv = new cv2.Mat();
+      cv2.bitwise_not(filled, inv);
+      cv2.bitwise_and(m8, inv, newpix);
+      const partial = new cv2.Mat();
+      imgs[i].copyTo(partial, newpix);
+      cv2.add(result, partial, result);
+      cv2.bitwise_or(filled, m8, filled);
+      m8.delete(); inv.delete(); newpix.delete(); partial.delete();
+    }
+    filled.delete();
+    return result;
+  },
+
+  featherBlend(imgs, masks){
+    const cv2=cv;
+    const H=imgs[0].rows, W=imgs[0].cols;
+    // Sum (img * mask) / sum (mask)
+    const acc = new cv2.Mat(H, W, cv2.CV_32FC3, new cv2.Scalar(0,0,0));
+    const wsum = new cv2.Mat(H, W, cv2.CV_32FC1, new cv2.Scalar(0));
+    for(let i=0;i<imgs.length;i++){
+      const f32 = new cv2.Mat();
+      imgs[i].convertTo(f32, cv2.CV_32FC3);
+      // multiply each channel by mask
+      const ch = new cv2.MatVector();
+      cv2.split(f32, ch);
+      for(let c=0;c<3;c++) cv2.multiply(ch.get(c), masks[i], ch.get(c));
+      const merged = new cv2.Mat();
+      cv2.merge(ch, merged);
+      cv2.add(acc, merged, acc);
+      cv2.add(wsum, masks[i], wsum);
+      f32.delete();
+      ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+      merged.delete();
+    }
+    // divide (avoid div by 0 by adding tiny constant via addWeighted)
+    const out = new cv2.Mat(H, W, cv2.CV_32FC3);
+    const ch = new cv2.MatVector();
+    cv2.split(acc, ch);
+    const wsafe = new cv2.Mat();
+    cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, wsafe);
+    for(let c=0;c<3;c++) cv2.divide(ch.get(c), wsafe, ch.get(c));
+    cv2.merge(ch, out);
+    const out8 = new cv2.Mat();
+    out.convertTo(out8, cv2.CV_8UC3);
+    acc.delete(); wsum.delete(); wsafe.delete(); out.delete();
+    ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+    return out8;
+  },
+
+  async multibandBlend(imgs, masks){
+    const cv2=cv;
+    const levels = 4;
+    // Build Laplacian pyramid for each image, Gaussian for each mask
+    const lapPyrs=[]; const gauPyrs=[];
+    for(let i=0;i<imgs.length;i++){
+      updateBusy(`Pyramide ${i+1}/${imgs.length}`, 70 + 15*i/imgs.length);
+      await sleep(0);
+      const f = new cv2.Mat();
+      imgs[i].convertTo(f, cv2.CV_32FC3);
+      lapPyrs.push(buildLaplacianPyr(f, levels));
+      f.delete();
+      gauPyrs.push(buildGaussianPyr(masks[i], levels));
+    }
+    // Blend at each level
+    const blendedPyr=[];
+    for(let lv=0; lv<=levels; lv++){
+      const sample = lapPyrs[0][lv];
+      const accum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC3, new cv2.Scalar(0,0,0));
+      const wsum = new cv2.Mat(sample.rows, sample.cols, cv2.CV_32FC1, new cv2.Scalar(0));
+      for(let i=0;i<imgs.length;i++){
+        const lap = lapPyrs[i][lv];
+        const m = gauPyrs[i][lv];
+        // Resize mask if shape mismatch (some platforms have off-by-one)
+        let mFit = m;
+        let mTmp=null;
+        if(m.cols!==lap.cols || m.rows!==lap.rows){
+          mTmp = new cv2.Mat();
+          cv2.resize(m, mTmp, new cv2.Size(lap.cols, lap.rows));
+          mFit = mTmp;
+        }
+        const ch = new cv2.MatVector();
+        cv2.split(lap, ch);
+        for(let c=0;c<3;c++) cv2.multiply(ch.get(c), mFit, ch.get(c));
+        const w = new cv2.Mat(); cv2.merge(ch, w);
+        cv2.add(accum, w, accum);
+        cv2.add(wsum, mFit, wsum);
+        ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+        w.delete();
+        if(mTmp) mTmp.delete();
+      }
+      // Divide
+      const safe=new cv2.Mat();
+      cv2.addWeighted(wsum, 1, wsum, 0, 1e-6, safe);
+      const ch = new cv2.MatVector();
+      cv2.split(accum, ch);
+      for(let c=0;c<3;c++) cv2.divide(ch.get(c), safe, ch.get(c));
+      const merged=new cv2.Mat(); cv2.merge(ch, merged);
+      blendedPyr.push(merged);
+      accum.delete(); wsum.delete(); safe.delete();
+      ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete();
+    }
+    // Reconstruct
+    let cur = blendedPyr[blendedPyr.length-1].clone();
+    for(let lv=blendedPyr.length-2; lv>=0; lv--){
+      const up=new cv2.Mat();
+      cv2.pyrUp(cur, up, new cv2.Size(blendedPyr[lv].cols, blendedPyr[lv].rows));
+      const sum=new cv2.Mat();
+      cv2.add(up, blendedPyr[lv], sum);
+      cur.delete(); up.delete();
+      cur = sum;
+    }
+    // Clip and convert
+    const out = new cv2.Mat();
+    cur.convertTo(out, cv2.CV_8UC3);
+    cur.delete();
+    blendedPyr.forEach(m=>m.delete());
+    lapPyrs.forEach(p=>p.forEach(m=>m.delete()));
+    gauPyrs.forEach(p=>p.forEach(m=>m.delete()));
+    return out;
+  },
+
+  /* ====================== View / draw ====================== */
+  fitView(force=false){
+    if(!this.blendedThumb) return;
+    const area = $('canvas-area').getBoundingClientRect();
+    const scale = Math.min(area.width/this.blendedThumb.width, area.height/this.blendedThumb.height) * 0.95;
+    this.view.fitScale = scale;
+    this.view.scale = scale;
+    this.view.tx = (area.width - this.blendedThumb.width*scale)/2;
+    this.view.ty = (area.height - this.blendedThumb.height*scale)/2;
+    this.redraw();
+  },
+
+  setZoom(s){
+    if(!this.blendedThumb) return;
+    const area = $('canvas-area').getBoundingClientRect();
+    const cx = area.width/2, cy = area.height/2;
+    // Keep center of view stable
+    const wx = (cx - this.view.tx)/this.view.scale;
+    const wy = (cy - this.view.ty)/this.view.scale;
+    this.view.scale = clamp(s, 0.05, 30);
+    this.view.tx = cx - wx*this.view.scale;
+    this.view.ty = cy - wy*this.view.scale;
+    this.redraw();
+  },
+
+  scheduleRedraw(){
+    if(this._redrawScheduled) return;
+    this._redrawScheduled = true;
+    requestAnimationFrame(()=>{ this._redrawScheduled=false; this.redraw(); });
+  },
+
+  redraw(){
+    if(!this.blendedThumb){ return; }
+    $('empty-state').style.display='none';
+    const area = $('canvas-area').getBoundingClientRect();
+    const cv = $('cv-base'), ctx = cv.getContext('2d');
+    cv.width = area.width; cv.height = area.height;
+    cv.style.display='block'; cv.style.width=area.width+'px'; cv.style.height=area.height+'px';
+    cv.style.left='0'; cv.style.top='0';
+    $('canvas-toolbar').style.display='flex';
+    $('zoom-bar').style.display='flex';
+    setText('zoom-val', Math.round(this.view.scale*100)+'%');
+    setText('st-canvas-size', `${this.blendedThumb.width}×${this.blendedThumb.height}px`);
+
+    ctx.fillStyle = '#0a0c10';
+    ctx.fillRect(0,0,cv.width, cv.height);
+
+    // Apply view transform
+    ctx.save();
+    ctx.translate(this.view.tx, this.view.ty);
+    ctx.scale(this.view.scale, this.view.scale);
+
+    // Draw base mosaic (with filters)
+    this.drawBaseWithFilters(ctx);
+
+    // Overlay (manual align)
+    if(this.selectedImage>=0 && this.selectedImage!==this.refIdx && this.homographies.length){
+      this.drawOverlay(ctx);
+    }
+
+    // A/B
+    if(this.refImage && this.abMode!=='off'){
+      this.drawAB(ctx);
+    }
+
+    ctx.restore();
+
+    // Annotations + measurement (in screen space)
+    this.drawAnnotations();
+  },
+
+  drawBaseWithFilters(ctx){
+    const f = this.filters;
+    const filterStr = [
+      `brightness(${1 + f.bright/100})`,
+      `contrast(${1 + f.contrast/100})`,
+      `saturate(${1 + f.sat/100})`,
+      f.invert?'invert(1)':'',
+      f.gray?'grayscale(1)':''
+    ].filter(Boolean).join(' ');
+    ctx.filter = filterStr;
+    ctx.drawImage(this.blendedThumb, 0,0);
+    ctx.filter = 'none';
+
+    // Heavier filters that require pixel access (gamma, clahe, edge, sharp): lazy compute
+    if(f.gamma!==1 || f.clahe || f.edge || f.sharp){
+      this.applyAdvancedFilters(ctx);
+    }
+  },
+
+  applyAdvancedFilters(ctx){
+    if(!this.cvReady) return;
+    if(this._advFilterCached &&
+       this._advFilterCachedKey === JSON.stringify(this.filters)){
+      ctx.drawImage(this._advFilterCached, 0,0);
+      return;
+    }
+    // Compute on the thumb only (not transformed)
+    const cv2 = cv;
+    const src = cv2.imread(this.blendedThumb);
+    const work = new cv2.Mat();
+    cv2.cvtColor(src, work, cv2.COLOR_RGBA2RGB);
+    if(this.filters.gamma!==1){
+      const lut = new Uint8Array(256);
+      const g = 1/this.filters.gamma;
+      for(let i=0;i<256;i++) lut[i] = clamp(Math.pow(i/255, g)*255, 0, 255)|0;
+      const data = work.data;
+      for(let i=0;i<data.length;i++) data[i] = lut[data[i]];
+    }
+    if(this.filters.clahe){
+      const lab = new cv2.Mat();
+      cv2.cvtColor(work, lab, cv2.COLOR_RGB2Lab);
+      const ch = new cv2.MatVector();
+      cv2.split(lab, ch);
+      const clahe = new cv2.CLAHE(2.0, new cv2.Size(8,8));
+      clahe.apply(ch.get(0), ch.get(0));
+      cv2.merge(ch, lab);
+      cv2.cvtColor(lab, work, cv2.COLOR_Lab2RGB);
+      lab.delete(); ch.get(0).delete(); ch.get(1).delete(); ch.get(2).delete(); ch.delete(); clahe.delete();
+    }
+    if(this.filters.sharp>0){
+      const blur=new cv2.Mat();
+      cv2.GaussianBlur(work, blur, new cv2.Size(0,0), 1.5);
+      cv2.addWeighted(work, 1+this.filters.sharp/50, blur, -this.filters.sharp/50, 0, work);
+      blur.delete();
+    }
+    if(this.filters.edge){
+      const gray=new cv2.Mat(), edges=new cv2.Mat();
+      cv2.cvtColor(work, gray, cv2.COLOR_RGB2GRAY);
+      cv2.Canny(gray, edges, 50, 150);
+      cv2.cvtColor(edges, work, cv2.COLOR_GRAY2RGB);
+      gray.delete(); edges.delete();
+    }
+    const out=document.createElement('canvas');
+    out.width=work.cols; out.height=work.rows;
+    cv2.imshow(out, work);
+    src.delete(); work.delete();
+    this._advFilterCached = out;
+    this._advFilterCachedKey = JSON.stringify(this.filters);
+    ctx.drawImage(out, 0,0);
+  },
+
+  drawOverlay(ctx){
+    // Show only the selected source image warped, semi-transparent
+    if(this._overlayCacheIdx !== this.selectedImage){
+      // Build a single-image stitch of the selected image with current Hs
+      const idx = this.selectedImage;
+      const H = matMul3(this.deltas[idx], this.homographies[idx]);
+      const refH = matMul3(this.deltas[this.refIdx], this.homographies[this.refIdx]);
+      // Compute relative position to base bounding box
+      // Easier: we just draw the warped image via 2D affine when H has no perspective
+      // Use canvas 2D transform from H if it's nearly affine
+      this._overlayCacheIdx = idx;
+      this._overlayCacheH = H;
+      // Pre-warp into a temp canvas at thumb resolution
+      this._overlayCanvas = this.warpToCanvas(this.images[idx].thumb, H);
+    }
+    ctx.save();
+    ctx.globalAlpha = this.alpha;
+    ctx.drawImage(this._overlayCanvas, 0,0);
+    ctx.restore();
+  },
+
+  warpToCanvas(srcCanvas, H){
+    // Use OpenCV.js to warp into a canvas matching this.blendedThumb size
+    const cv2=cv;
+    const src = cv2.imread(srcCanvas);
+    const Hmat = cv2.matFromArray(3,3, cv2.CV_64F, H);
+    // Need same Translation as blendedThumb. We rebuild it from current Hs
+    const N = this.images.length;
+    let xmin=Infinity,ymin=Infinity,xmax=-Infinity,ymax=-Infinity;
+    for(let i=0;i<N;i++){
+      const Hi = matMul3(this.deltas[i], this.homographies[i]);
+      const w=this.images[i].thumb.width, h=this.images[i].thumb.height;
+      for(const [x,y] of [[0,0],[w,0],[w,h],[0,h]]){
+        const [xp,yp]=applyHom(Hi,x,y);
+        if(xp<xmin)xmin=xp; if(yp<ymin)ymin=yp; if(xp>xmax)xmax=xp; if(yp>ymax)ymax=yp;
+      }
+    }
+    const tx=-Math.floor(xmin), ty=-Math.floor(ymin);
+    const W=Math.ceil(xmax-xmin), Hh=Math.ceil(ymax-ymin);
+    const T=cv2.matFromArray(3,3,cv2.CV_64F,[1,0,tx,0,1,ty,0,0,1]);
+    const HT=new cv2.Mat();
+    cv2.gemm(T, Hmat, 1, new cv2.Mat(), 0, HT);
+    const dst=new cv2.Mat();
+    cv2.warpPerspective(src, dst, HT, new cv2.Size(W, Hh), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
+    const out=document.createElement('canvas');
+    out.width=W; out.height=Hh;
+    cv2.imshow(out, dst);
+    src.delete(); Hmat.delete(); T.delete(); HT.delete(); dst.delete();
+    return out;
+  },
+
+  drawAB(ctx){
+    // Draw refImage on top with chosen mode
+    const w=this.blendedThumb.width, h=this.blendedThumb.height;
+    const ref=this.refImage.canvas;
+    if(this.abMode==='onion'){
+      ctx.save();
+      ctx.globalAlpha = +$('ab-alpha').value/100;
+      ctx.drawImage(ref, 0,0,w,h);
+      ctx.restore();
+    } else if(this.abMode==='split-h' || this.abMode==='split-v'){
+      const split = +$('ab-split').value/100;
+      ctx.save();
+      ctx.beginPath();
+      if(this.abMode==='split-h'){ ctx.rect(w*split, 0, w*(1-split), h); }
+      else { ctx.rect(0, h*split, w, h*(1-split)); }
+      ctx.clip();
+      ctx.drawImage(ref, 0,0,w,h);
+      ctx.restore();
+      // Split line
+      ctx.save();
+      ctx.strokeStyle='#ffd700'; ctx.lineWidth=1/this.view.scale;
+      ctx.beginPath();
+      if(this.abMode==='split-h'){ ctx.moveTo(w*split, 0); ctx.lineTo(w*split, h); }
+      else { ctx.moveTo(0, h*split); ctx.lineTo(w, h*split); }
+      ctx.stroke();
+      ctx.restore();
+    } else if(this.abMode==='diff'){
+      // Draw ref then composite difference
+      ctx.save();
+      ctx.globalCompositeOperation = 'difference';
+      ctx.drawImage(ref, 0,0,w,h);
+      ctx.restore();
+    }
+  },
+
+  drawAnnotations(){
+    const cv = $('cv-annot');
+    const area = $('canvas-area').getBoundingClientRect();
+    cv.width = area.width; cv.height = area.height;
+    cv.style.display='block'; cv.style.width=area.width+'px'; cv.style.height=area.height+'px';
+    cv.style.left='0'; cv.style.top='0';
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0,0,cv.width, cv.height);
+    ctx.save();
+    ctx.translate(this.view.tx, this.view.ty);
+    ctx.scale(this.view.scale, this.view.scale);
+
+    // Calibration line (always shown if present)
+    if(this.calibration){
+      const c=this.calibration;
+      ctx.save();
+      ctx.strokeStyle='#ffd700'; ctx.lineWidth=2/this.view.scale;
+      ctx.beginPath(); ctx.moveTo(c.p1.x, c.p1.y); ctx.lineTo(c.p2.x, c.p2.y); ctx.stroke();
+      ctx.fillStyle='#ffd700';
+      [c.p1, c.p2].forEach(p=>{ ctx.beginPath(); ctx.arc(p.x, p.y, 4/this.view.scale, 0, Math.PI*2); ctx.fill(); });
+      ctx.restore();
+    }
+
+    // Annotations
+    this.annotations.forEach((a,i)=>this.drawAnnot(ctx, a, i===this.selectedAnnot));
+
+    // Drag preview
+    if(this.drag.active && this.drag.preview){
+      this.drawAnnot(ctx, this.drag.preview, true);
+    }
+
+    ctx.restore();
+  },
+
+  drawAnnot(ctx, a, selected){
+    ctx.save();
+    ctx.strokeStyle = a.color || '#ff5d6c';
+    ctx.fillStyle = a.color || '#ff5d6c';
+    ctx.lineWidth = (a.thick||3)/this.view.scale;
+    ctx.font = `${14/this.view.scale}px sans-serif`;
+    if(a.type==='circle'){
+      const cx=(a.x+a.x2)/2, cy=(a.y+a.y2)/2;
+      const rx=Math.abs(a.x2-a.x)/2, ry=Math.abs(a.y2-a.y)/2;
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2); ctx.stroke();
+      if(a.number){
+        ctx.fillText(a.number, a.x2+4/this.view.scale, a.y-4/this.view.scale);
+      }
+    } else if(a.type==='rect'){
+      ctx.strokeRect(Math.min(a.x,a.x2), Math.min(a.y,a.y2), Math.abs(a.x2-a.x), Math.abs(a.y2-a.y));
+      if(a.number){ ctx.fillText(a.number, a.x, a.y-4/this.view.scale); }
+    } else if(a.type==='arrow'){
+      drawArrow(ctx, a.x, a.y, a.x2, a.y2, 14/this.view.scale);
+      if(a.number){ ctx.fillText(a.number, a.x2+4/this.view.scale, a.y2); }
+    } else if(a.type==='text'){
+      ctx.font = `${(a.thick*4||14)/this.view.scale}px sans-serif`;
+      ctx.fillText(a.label||'?', a.x, a.y);
+    } else if(a.type==='measure'){
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(a.x2,a.y2); ctx.stroke();
+      const mx=(a.x+a.x2)/2, my=(a.y+a.y2)/2;
+      const dx=a.x2-a.x, dy=a.y2-a.y;
+      const distPx=Math.hypot(dx,dy);
+      let label;
+      if(this.calibration){
+        const mm = distPx/this.calibration.pxPerMm;
+        label = mm.toFixed(2)+' mm';
+      } else {
+        label = distPx.toFixed(0)+' px';
+      }
+      ctx.fillStyle='rgba(0,0,0,0.7)';
+      const pad=4/this.view.scale;
+      const tw=ctx.measureText(label).width;
+      const tH=14/this.view.scale;
+      ctx.fillRect(mx-tw/2-pad, my-tH-pad, tw+pad*2, tH+pad);
+      ctx.fillStyle=a.color||'#ffd700';
+      ctx.textAlign='center'; ctx.fillText(label, mx, my-pad);
+      ctx.textAlign='start';
+    }
+    if(selected){
+      ctx.strokeStyle = '#fff';
+      ctx.setLineDash([4/this.view.scale, 3/this.view.scale]);
+      ctx.lineWidth = 1/this.view.scale;
+      const xMin=Math.min(a.x,a.x2||a.x)-6/this.view.scale;
+      const yMin=Math.min(a.y,a.y2||a.y)-6/this.view.scale;
+      const xMax=Math.max(a.x,a.x2||a.x)+6/this.view.scale;
+      const yMax=Math.max(a.y,a.y2||a.y)+6/this.view.scale;
+      ctx.strokeRect(xMin, yMin, xMax-xMin, yMax-yMin);
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  },
+
+  refreshAnnotList(){
+    const list=$('annot-list'); list.innerHTML='';
+    setText('annot-count', this.annotations.length);
+    this.annotations.forEach((a,i)=>{
+      const div=document.createElement('div');
+      div.className='annot-item'+(i===this.selectedAnnot?' active':'');
+      const sw=document.createElement('div'); sw.className='swatch'; sw.style.background=a.color||'#ff5d6c';
+      const num=document.createElement('div'); num.className='num'; num.textContent='#'+(a.number||(i+1));
+      const lab=document.createElement('div'); lab.className='label';
+      lab.textContent = a.label || a.type;
+      const del=document.createElement('button'); del.className='del'; del.textContent='✕';
+      del.onclick = e=>{ e.stopPropagation(); this.annotations.splice(i,1); this.refreshAnnotList(); this.redraw(); };
+      div.appendChild(num); div.appendChild(sw); div.appendChild(lab); div.appendChild(del);
+      div.onclick=()=>{ this.selectedAnnot=i; this.refreshAnnotList(); this.redraw(); };
+      list.appendChild(div);
+    });
+  },
+
+  /* ====================== Tool & input ====================== */
+  setTool(t){
+    this.tool=t;
+    document.querySelectorAll('.canvas-toolbar button[data-tool]').forEach(b=>b.classList.toggle('active', b.dataset.tool===t));
+    const labels={pan:'Déplacer',loupe:'Loupe','annot-circle':'Cercle défaut','annot-arrow':'Flèche','annot-rect':'Rectangle','annot-text':'Texte',measure:'Mesure',calibrate:'Calibrer'};
+    setText('st-tool','Outil : '+(labels[t]||t));
+    $('loupe').style.display = (t==='loupe')?'block':'none';
+    $('canvas-area').style.cursor = (t==='pan')?'grab':'crosshair';
+  },
+
+  bindCanvasEvents(){
+    const area = $('canvas-area');
+    let panStart=null;
+    area.addEventListener('wheel', e=>{
+      if(!this.blendedThumb) return;
+      e.preventDefault();
+      const delta = e.deltaY;
+      if(this.selectedImage>=0 && this.selectedImage!==this.refIdx && (e.shiftKey||e.altKey)){
+        // Manual align
+        if(e.shiftKey) this.applyDelta(this.selectedImage, {rotation: delta<0?1:-1});
+        else if(e.altKey) this.applyDelta(this.selectedImage, {scale: delta<0?1.02:1/1.02});
+        this.invalidateOverlay();
+        this.scheduleRedraw();
+      } else {
+        // Zoom view
+        const rect=area.getBoundingClientRect();
+        const cx=e.clientX-rect.left, cy=e.clientY-rect.top;
+        const wx=(cx-this.view.tx)/this.view.scale, wy=(cy-this.view.ty)/this.view.scale;
+        const factor = delta<0?1.15:1/1.15;
+        this.view.scale = clamp(this.view.scale*factor, 0.05, 30);
+        this.view.tx = cx - wx*this.view.scale;
+        this.view.ty = cy - wy*this.view.scale;
+        this.redraw();
+      }
+    }, {passive:false});
+
+    area.addEventListener('mousedown', e=>{
+      if(!this.blendedThumb) return;
+      const rect=area.getBoundingClientRect();
+      const cx=e.clientX-rect.left, cy=e.clientY-rect.top;
+      const wx=(cx-this.view.tx)/this.view.scale, wy=(cy-this.view.ty)/this.view.scale;
+      if(this.tool==='pan'){
+        panStart={x:cx, y:cy, tx:this.view.tx, ty:this.view.ty};
+        area.style.cursor='grabbing';
+      } else if(this.tool.startsWith('annot-') || this.tool==='measure' || this.tool==='calibrate'){
+        this.drag={active:true, startX:wx, startY:wy, preview:null};
+      }
+    });
+
+    area.addEventListener('mousemove', e=>{
+      const rect=area.getBoundingClientRect();
+      const cx=e.clientX-rect.left, cy=e.clientY-rect.top;
+      const wx=(cx-this.view.tx)/this.view.scale, wy=(cy-this.view.ty)/this.view.scale;
+      setText('st-coords', `x:${wx.toFixed(0)} y:${wy.toFixed(0)}`+ (this.calibration? ` (${(wx/this.calibration.pxPerMm).toFixed(1)}mm)`:''));
+      if(panStart){
+        this.view.tx = panStart.tx + (cx-panStart.x);
+        this.view.ty = panStart.ty + (cy-panStart.y);
+        this.redraw();
+      } else if(this.drag.active){
+        this.drag.preview = this.makeAnnot(this.drag.startX, this.drag.startY, wx, wy, true);
+        this.drawAnnotations();
+      } else if(this.tool==='loupe'){
+        this.updateLoupe(cx, cy, wx, wy);
+      }
+    });
+
+    area.addEventListener('mouseup', e=>{
+      const rect=area.getBoundingClientRect();
+      const cx=e.clientX-rect.left, cy=e.clientY-rect.top;
+      const wx=(cx-this.view.tx)/this.view.scale, wy=(cy-this.view.ty)/this.view.scale;
+      if(panStart){
+        panStart=null;
+        area.style.cursor=this.tool==='pan'?'grab':'crosshair';
+      }
+      if(this.drag.active){
+        const a = this.makeAnnot(this.drag.startX, this.drag.startY, wx, wy, false);
+        if(a){ this.commitAnnot(a); }
+        this.drag={active:false};
+        this.drawAnnotations();
+      }
+    });
+
+    area.addEventListener('mouseleave', ()=>{
+      if(panStart){ panStart=null; area.style.cursor=this.tool==='pan'?'grab':'crosshair'; }
+      $('loupe').style.display=this.tool==='loupe'?'none':'none';
+    });
+
+    area.addEventListener('mouseenter', ()=>{
+      if(this.tool==='loupe') $('loupe').style.display='block';
+    });
+  },
+
+  makeAnnot(x1,y1,x2,y2, preview){
+    const a = {color:this.activeColor, thick:this.thick};
+    if(this.tool==='annot-circle') a.type='circle';
+    else if(this.tool==='annot-rect') a.type='rect';
+    else if(this.tool==='annot-arrow') a.type='arrow';
+    else if(this.tool==='annot-text') a.type='text';
+    else if(this.tool==='measure') a.type='measure';
+    else if(this.tool==='calibrate') a.type='calibrate';
+    a.x=x1; a.y=y1; a.x2=x2; a.y2=y2;
+    if(a.type==='text' && !preview){
+      // Will prompt
+    }
+    return a;
+  },
+
+  commitAnnot(a){
+    const dx=Math.abs(a.x2-a.x), dy=Math.abs(a.y2-a.y);
+    if(a.type!=='text' && a.type!=='calibrate' && Math.hypot(dx,dy)<3) return;
+    if(a.type==='calibrate'){
+      const mm=parseFloat(prompt('Distance réelle de la ligne tracée (en mm) ?', '10'));
+      if(!isFinite(mm)||mm<=0) return;
+      const px=Math.hypot(a.x2-a.x, a.y2-a.y);
+      this.calibration={ pxPerMm: px/mm, p1:{x:a.x,y:a.y}, p2:{x:a.x2,y:a.y2}, mm };
+      this.updateCalibInfo();
+      this.redraw();
+      return;
+    }
+    if(a.type==='text'){
+      this.textPrompt.show('Texte', '', txt=>{
+        if(!txt) return;
+        a.label = txt;
+        a.number = this.annotations.length+1;
+        a.note = $('defect-type').value;
+        this.annotations.push(a);
+        this.refreshAnnotList(); this.redraw();
+      });
+      return;
+    }
+    a.number = this.annotations.length+1;
+    a.note = $('defect-type').value;
+    a.label = $('defect-type').value;
+    this.annotations.push(a);
+    this.refreshAnnotList();
+  },
+
+  textPrompt:{
+    _cb:null,
+    show(title, defv, cb){
+      $('text-modal-title').textContent=title;
+      $('text-modal-input').value=defv;
+      $('text-modal').style.display='flex';
+      setTimeout(()=>$('text-modal-input').focus(),50);
+      this._cb=cb;
+    },
+    confirm(){ const v=$('text-modal-input').value; $('text-modal').style.display='none'; this._cb && this._cb(v); },
+    cancel(){ $('text-modal').style.display='none'; this._cb && this._cb(null); }
+  },
+
+  updateCalibInfo(){
+    if(!this.calibration){ setText('calib-info','Aucune calibration. Utilisez l\'outil 🎯 pour tracer une distance connue.'); return; }
+    const c=this.calibration;
+    setText('calib-info', `${c.pxPerMm.toFixed(2)} px/mm  (${c.mm} mm = ${(c.mm*c.pxPerMm).toFixed(1)} px)`);
+    this.redraw();
+  },
+
+  applyDelta(idx, {translation=[0,0], rotation=0, scale=1}={}){
+    const [tx,ty]=translation;
+    let M=[1,0,0,0,1,0,0,0,1];
+    if(tx||ty){ M = matMul3([1,0,tx,0,1,ty,0,0,1], M); }
+    if(rotation){
+      const a = rotation*Math.PI/180;
+      const c=Math.cos(a), s=Math.sin(a);
+      M = matMul3([c,-s,0,s,c,0,0,0,1], M);
+    }
+    if(scale!==1){
+      M = matMul3([scale,0,0,0,scale,0,0,0,1], M);
+    }
+    this.deltas[idx] = matMul3(M, this.deltas[idx]);
+    this.invalidateOverlay();
+  },
+
+  invalidateOverlay(){ this._overlayCacheIdx=-1; },
+
+  onKeydown(e){
+    // Ignore if typing in input
+    if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    const key=e.key;
+    // Tool shortcuts
+    const shortcuts={p:'pan',l:'loupe',c:'annot-circle',a:'annot-arrow',r:'annot-rect',t:'annot-text',m:'measure',k:'calibrate'};
+    if(shortcuts[key.toLowerCase()] && !e.ctrlKey && !e.altKey){
+      this.setTool(shortcuts[key.toLowerCase()]); e.preventDefault(); return;
+    }
+    if(key==='f'||key==='F'){ this.fitView(); e.preventDefault(); return; }
+    if(key==='1'){ this.setZoom(1); e.preventDefault(); return; }
+    if(key==='Escape'){ this.setTool('pan'); this.drag={active:false}; this.redraw(); return; }
+    if(key==='Delete' && this.selectedAnnot>=0){
+      this.annotations.splice(this.selectedAnnot,1);
+      this.selectedAnnot=-1;
+      this.refreshAnnotList(); this.redraw();
+      return;
+    }
+    if(key===' '){
+      this.alpha = this.alpha>0.1?0:0.5;
+      $('overlay-alpha').value = this.alpha*100;
+      $('overlay-alpha-val').textContent = Math.round(this.alpha*100)+'%';
+      this.redraw(); e.preventDefault(); return;
+    }
+    // Manual align nudges
+    if(this.selectedImage>=0 && this.selectedImage!==this.refIdx){
+      const step = e.shiftKey?10:1;
+      let dx=0,dy=0;
+      if(key==='ArrowLeft') dx=-step;
+      else if(key==='ArrowRight') dx=step;
+      else if(key==='ArrowUp') dy=-step;
+      else if(key==='ArrowDown') dy=step;
+      else return;
+      this.applyDelta(this.selectedImage, {translation:[dx,dy]});
+      this.invalidateOverlay(); this.redraw(); e.preventDefault();
+    }
+  },
+
+  resetFilters(){
+    this.filters={bright:0,contrast:0,sat:0,gamma:1,sharp:0,invert:false,gray:false,edge:false,clahe:false};
+    ['bright','contrast','sat','sharp'].forEach(k=>{$('f-'+k).value=0; $('f-'+k+'-v').textContent='0';});
+    $('f-gamma').value=100; $('f-gamma-v').textContent='1.00';
+    ['invert','gray','edge','clahe'].forEach(k=>$('f-'+k).checked=false);
+    this._advFilterCached=null;
+    this.redraw();
+  },
+
+  /* ====================== Loupe ====================== */
+  updateLoupeSize(){
+    const sz=+$('loupe-size').value;
+    const l=$('loupe');
+    l.style.width=sz+'px'; l.style.height=sz+'px';
+    $('loupe-canvas').width=sz; $('loupe-canvas').height=sz;
+  },
+
+  updateLoupe(cx, cy, wx, wy){
+    const sz=+$('loupe-size').value;
+    const zoom=+$('loupe-zoom').value;
+    const l=$('loupe');
+    l.style.left=(cx - sz - 18)+'px';
+    l.style.top=(cy - sz/2)+'px';
+    if(cx - sz - 18 < 0){ l.style.left=(cx + 18)+'px'; }
+    const lc=$('loupe-canvas');
+    if(lc.width!==sz){ lc.width=sz; lc.height=sz; }
+    const ctx=lc.getContext('2d');
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,sz,sz);
+    if(this.blendedThumb){
+      const half = sz/(2*zoom);
+      ctx.imageSmoothingEnabled=false;
+      ctx.drawImage(this.blendedThumb, wx-half, wy-half, half*2, half*2, 0, 0, sz, sz);
+    }
+  },
+
+  /* ====================== Reference / A-B ====================== */
+  async loadReference(file){
+    showBusy('Chargement réf.', file.name, 30);
+    const url=URL.createObjectURL(file);
+    const img=await new Promise(r=>{const i=new Image(); i.onload=()=>r(i); i.src=url;});
+    const orient = await readExifOrientation(file);
+    const c = applyOrientationToImage(img, orient);
+    this.refImage = { canvas:c, orientation:orient, name:file.name };
+    URL.revokeObjectURL(url);
+    if($('ab-mode').value==='off'){ $('ab-mode').value='onion'; this.abMode='onion'; }
+    this.redraw();
+    hideBusy();
+    setStatus(`Référence "${file.name}" chargée. Choisissez un mode A/B.`);
+  },
+
+  async alignReference(){
+    if(!this.refImage || !this.blendedThumb || !this.cvReady){ alert('Charger une référence et fusionner d\'abord.'); return; }
+    showBusy('Alignement réf.', 'Calcul…', 20);
+    await sleep(20);
+    try{
+      const cv2=cv;
+      const detector = new cv2.SIFT();
+      const refMat = cv2.imread(this.refImage.canvas);
+      const baseMat = cv2.imread(this.blendedThumb);
+      const refG=new cv2.Mat(), baseG=new cv2.Mat();
+      cv2.cvtColor(refMat, refG, cv2.COLOR_RGBA2GRAY);
+      cv2.cvtColor(baseMat, baseG, cv2.COLOR_RGBA2GRAY);
+      const kp1=new cv2.KeyPointVector(), kp2=new cv2.KeyPointVector();
+      const d1=new cv2.Mat(), d2=new cv2.Mat();
+      detector.detectAndCompute(refG, new cv2.Mat(), kp1, d1);
+      detector.detectAndCompute(baseG, new cv2.Mat(), kp2, d2);
+      const matcher=new cv2.BFMatcher(cv2.NORM_L2, false);
+      const knn=new cv2.DMatchVectorVector();
+      matcher.knnMatch(d1, d2, knn, 2);
+      const A=[], B=[];
+      for(let i=0;i<knn.size();i++){
+        const v=knn.get(i);
+        if(v.size()<2){v.delete(); continue;}
+        const m=v.get(0), n=v.get(1);
+        if(m.distance < 0.7*n.distance){
+          const p1=kp1.get(m.queryIdx).pt, p2=kp2.get(m.trainIdx).pt;
+          A.push(p1.x,p1.y); B.push(p2.x,p2.y);
+        }
+        v.delete();
+      }
+      knn.delete();
+      if(A.length<8){ throw new Error(`Pas assez de correspondances (${A.length/2})`); }
+      const aMat=cv2.matFromArray(A.length/2,1,cv2.CV_32FC2,A);
+      const bMat=cv2.matFromArray(B.length/2,1,cv2.CV_32FC2,B);
+      const H=cv2.findHomography(aMat,bMat,cv2.RANSAC,3);
+      if(H.empty()){ throw new Error('Homographie impossible'); }
+      // Warp ref to base size
+      const dst=new cv2.Mat();
+      cv2.warpPerspective(refMat, dst, H, new cv2.Size(this.blendedThumb.width, this.blendedThumb.height), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
+      const out=document.createElement('canvas');
+      out.width=this.blendedThumb.width; out.height=this.blendedThumb.height;
+      cv2.imshow(out, dst);
+      this.refImage.canvas = out;
+      // Cleanup
+      detector.delete(); matcher.delete();
+      refMat.delete(); baseMat.delete(); refG.delete(); baseG.delete();
+      kp1.delete(); kp2.delete(); d1.delete(); d2.delete();
+      aMat.delete(); bMat.delete(); H.delete(); dst.delete();
+      hideBusy();
+      this.redraw();
+      setStatus('Référence alignée sur la mosaïque.');
+    }catch(e){
+      hideBusy();
+      alert('Échec alignement réf : '+e.message);
+    }
+  },
+
+  /* ====================== Export ====================== */
+  async exportImage(){
+    if(!this.blendedThumb){ alert('Rien à exporter'); return; }
+    showBusy('Export', 'Préparation…', 10);
+    await sleep(20);
+    try{
+      // Build hi-res mosaic from full-resolution canvases using Hs scaled
+      const targetMode = $('exp-scale').value;
+      let scale = 1;
+      if(targetMode==='1') scale=1;
+      else if(targetMode==='1.5') scale=1.5;
+      else if(targetMode==='2') scale=2;
+      else if(targetMode==='custom'){
+        const target = +$('exp-custom').value;
+        scale = target / this.blendedThumb.width;
+      }
+      // Use full-res images
+      updateBusy('Recalcul homographies haute résolution…', 25);
+      await sleep(0);
+      const hsFull = this.images.map((im,i)=>{
+        const Hi = matMul3(this.deltas[i], this.homographies[i]);
+        // Hi maps thumb_i pixels into thumb-ref pixel space
+        // Need: full_i pixel -> full_ref pixel
+        const sFull_i = im.bitmap.width / im.thumb.width;
+        const sFull_ref = this.images[this.refIdx].bitmap.width / this.images[this.refIdx].thumb.width;
+        // fullRef = S_ref * Hi * S_i^-1 * fullI
+        const Si_inv = [1/sFull_i,0,0, 0,1/sFull_i,0, 0,0,1];
+        const Sref = [sFull_ref,0,0, 0,sFull_ref,0, 0,0,1];
+        const Hf = matMul3(Sref, matMul3(Hi, Si_inv));
+        // Apply user-requested scale
+        const Sout = [scale,0,0,0,scale,0,0,0,1];
+        return matMul3(Sout, Hf);
+      });
+      updateBusy('Fusion haute résolution…', 50);
+      await sleep(0);
+      const blendMode = $('blend-mode').value;
+      const fullCanvases = this.images.map(im=>im.bitmap);
+      const finalCanvas = await this.stitch(fullCanvases, hsFull, blendMode);
+
+      // Optionally bake annotations
+      if($('exp-with-annot').checked && this.annotations.length){
+        updateBusy('Fusion des annotations…', 85);
+        await sleep(0);
+        const ctx = finalCanvas.getContext('2d');
+        const rs = scale * (finalCanvas.width / (this.blendedThumb.width*scale));
+        // Annotations are stored in thumb coords. Map to final coords:
+        const sx = finalCanvas.width / this.blendedThumb.width;
+        const sy = finalCanvas.height / this.blendedThumb.height;
+        ctx.save();
+        ctx.scale(sx, sy);
+        // Trick: temporarily set view scale to 1 for drawing
+        const oldView = this.view;
+        this.view = {scale: 1, tx:0, ty:0};
+        this.annotations.forEach(a=>this.drawAnnotBaked(ctx, a));
+        if(this.calibration){
+          ctx.strokeStyle='#ffd700'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.moveTo(this.calibration.p1.x, this.calibration.p1.y); ctx.lineTo(this.calibration.p2.x, this.calibration.p2.y); ctx.stroke();
+        }
+        this.view = oldView;
+        ctx.restore();
+      }
+
+      // Save
+      updateBusy('Encodage…', 95);
+      await sleep(0);
+      const fmt = $('exp-format').value;
+      const q = +$('exp-q').value/100;
+      const mime = fmt==='png'?'image/png':'image/jpeg';
+      const blob = await new Promise(r=>finalCanvas.toBlob(r, mime, q));
+      const fname = `mosaic_${new Date().toISOString().slice(0,10)}.${fmt==='png'?'png':'jpg'}`;
+      downloadBlob(blob, fname);
+      this.finalCanvas = finalCanvas;
+      hideBusy();
+      setStatus(`Image exportée: ${fname} (${finalCanvas.width}×${finalCanvas.height})`);
+    }catch(e){
+      hideBusy();
+      alert('Erreur export: '+e.message);
+      console.error(e);
+    }
+  },
+
+  drawAnnotBaked(ctx, a){
+    ctx.save();
+    ctx.strokeStyle = a.color || '#ff5d6c';
+    ctx.fillStyle = a.color || '#ff5d6c';
+    ctx.lineWidth = a.thick||3;
+    ctx.font = '14px sans-serif';
+    if(a.type==='circle'){
+      const cx=(a.x+a.x2)/2, cy=(a.y+a.y2)/2;
+      const rx=Math.abs(a.x2-a.x)/2, ry=Math.abs(a.y2-a.y)/2;
+      ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2); ctx.stroke();
+      if(a.number) ctx.fillText(a.number, a.x2+4, a.y-4);
+    } else if(a.type==='rect'){
+      ctx.strokeRect(Math.min(a.x,a.x2), Math.min(a.y,a.y2), Math.abs(a.x2-a.x), Math.abs(a.y2-a.y));
+      if(a.number) ctx.fillText(a.number, a.x, a.y-4);
+    } else if(a.type==='arrow'){
+      drawArrow(ctx, a.x, a.y, a.x2, a.y2, 14);
+      if(a.number) ctx.fillText(a.number, a.x2+4, a.y2);
+    } else if(a.type==='text'){
+      ctx.font = `${(a.thick*4||14)}px sans-serif`;
+      ctx.fillText(a.label||'?', a.x, a.y);
+    } else if(a.type==='measure'){
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(a.x2,a.y2); ctx.stroke();
+      const mx=(a.x+a.x2)/2, my=(a.y+a.y2)/2;
+      const distPx=Math.hypot(a.x2-a.x, a.y2-a.y);
+      const label = this.calibration? (distPx/this.calibration.pxPerMm).toFixed(2)+' mm' : distPx.toFixed(0)+' px';
+      ctx.fillText(label, mx, my-4);
+    }
+    ctx.restore();
+  },
+
+  async exportReport(){
+    if(!this.blendedThumb){ alert('Rien à exporter'); return; }
+    showBusy('Rapport', 'Génération…', 30);
+    await sleep(0);
+    try{
+      // Build a snapshot of mosaic with annotations baked
+      const snap = document.createElement('canvas');
+      snap.width = this.blendedThumb.width; snap.height = this.blendedThumb.height;
+      const ctx = snap.getContext('2d');
+      ctx.drawImage(this.blendedThumb, 0,0);
+      const oldView=this.view; this.view={scale:1,tx:0,ty:0};
+      this.annotations.forEach(a=>this.drawAnnotBaked(ctx, a));
+      this.view=oldView;
+      const dataUrl = snap.toDataURL('image/jpeg', 0.85);
+
+      // Build per-defect crops
+      updateBusy('Vignettes des défauts…', 60);
+      const crops=[];
+      for(const a of this.annotations){
+        const xMin=Math.min(a.x,a.x2||a.x), yMin=Math.min(a.y,a.y2||a.y);
+        const xMax=Math.max(a.x,a.x2||a.x), yMax=Math.max(a.y,a.y2||a.y);
+        const pad = Math.max(40, Math.max(xMax-xMin, yMax-yMin)*0.4);
+        const cw=Math.max(80, (xMax-xMin)+pad*2), ch=Math.max(80,(yMax-yMin)+pad*2);
+        const c = document.createElement('canvas');
+        c.width = cw; c.height = ch;
+        const cctx = c.getContext('2d');
+        cctx.fillStyle='#222'; cctx.fillRect(0,0,cw,ch);
+        cctx.drawImage(this.blendedThumb, xMin-pad, yMin-pad, cw, ch, 0, 0, cw, ch);
+        // Draw the annotation
+        cctx.translate(-(xMin-pad), -(yMin-pad));
+        const oldV=this.view; this.view={scale:1,tx:0,ty:0};
+        this.drawAnnotBaked(cctx, a);
+        this.view=oldV;
+        crops.push(c.toDataURL('image/jpeg', 0.8));
+      }
+
+      // Build HTML report
+      const meta = {
+        ref: $('rep-ref').value,
+        sn: $('rep-sn').value,
+        op: $('rep-op').value,
+        notes: $('rep-notes').value,
+        verdict: $('rep-verdict').value,
+        date: new Date().toLocaleString()
+      };
+      const verdictLabel = {pending:'À statuer',ok:'Conforme',rework:'Retouche possible',ko:'Non conforme'}[meta.verdict];
+      const verdictColor = {pending:'#888',ok:'#3ddc97',rework:'#ffb454',ko:'#ff5d6c'}[meta.verdict];
+      const html = `<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><title>Rapport PCB ${meta.ref||''}</title>
+<style>
+body{font:13px/1.5 system-ui,sans-serif;margin:30px;color:#222;max-width:1100px}
+h1{margin:0 0 4px;font-size:22px} h2{font-size:16px;margin-top:24px;border-bottom:2px solid #ddd;padding-bottom:4px}
+.meta{display:grid;grid-template-columns:140px 1fr;gap:6px 14px;margin:10px 0}
+.meta div:nth-child(odd){color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+.verdict{display:inline-block;padding:6px 14px;border-radius:14px;color:white;font-weight:600}
+.mosaic{margin:14px 0;text-align:center}
+.mosaic img{max-width:100%;border:1px solid #ddd;border-radius:6px}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:top}
+th{background:#f5f5f5;font-size:11px;text-transform:uppercase}
+td.num{font-family:monospace;width:40px}
+td.thumb{width:160px;text-align:center}
+td.thumb img{max-width:140px;max-height:140px;border:1px solid #ccc}
+.swatch{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:middle;margin-right:4px}
+@media print{body{margin:10mm} .no-print{display:none}}
+</style></head><body>
+<h1>🔬 Rapport d'inspection PCB</h1>
+<div class="meta">
+<div>Référence carte</div><div>${esc(meta.ref)||'—'}</div>
+<div>N° série</div><div>${esc(meta.sn)||'—'}</div>
+<div>Opérateur</div><div>${esc(meta.op)||'—'}</div>
+<div>Date</div><div>${esc(meta.date)}</div>
+<div>Verdict</div><div><span class="verdict" style="background:${verdictColor}">${verdictLabel}</span></div>
+<div>Calibration</div><div>${this.calibration?this.calibration.pxPerMm.toFixed(2)+' px/mm':'non calibré'}</div>
+<div>Photos source</div><div>${this.images.length} (référence : ${esc(this.images[this.refIdx]?.name||'')})</div>
+<div>Défauts</div><div>${this.annotations.length}</div>
+</div>
+${meta.notes? `<h2>Observations</h2><p>${esc(meta.notes).replace(/\n/g,'<br>')}</p>`:''}
+<h2>Mosaïque annotée</h2>
+<div class="mosaic"><img src="${dataUrl}" alt="Mosaïque PCB"/></div>
+${this.annotations.length?`<h2>Détail des défauts (${this.annotations.length})</h2>
+<table>
+<thead><tr><th>#</th><th>Type</th><th>Position</th><th>Taille</th><th>Vignette</th><th>Note</th></tr></thead>
+<tbody>${this.annotations.map((a,i)=>{
+  const dx=Math.abs(a.x2-a.x), dy=Math.abs(a.y2-a.y);
+  let size='—';
+  if(this.calibration && a.type!=='text'){
+    size = `${(dx/this.calibration.pxPerMm).toFixed(2)} × ${(dy/this.calibration.pxPerMm).toFixed(2)} mm`;
+  } else if(a.type!=='text'){
+    size = `${dx.toFixed(0)} × ${dy.toFixed(0)} px`;
+  }
+  let pos = `(${a.x.toFixed(0)}, ${a.y.toFixed(0)})`;
+  if(this.calibration) pos += ` ≈ (${(a.x/this.calibration.pxPerMm).toFixed(1)}, ${(a.y/this.calibration.pxPerMm).toFixed(1)}) mm`;
+  return `<tr>
+    <td class="num">#${a.number||(i+1)}</td>
+    <td><span class="swatch" style="background:${a.color}"></span>${esc(a.note||a.label||a.type)}</td>
+    <td>${pos}</td>
+    <td>${size}</td>
+    <td class="thumb"><img src="${crops[i]}" alt="défaut ${i+1}"/></td>
+    <td>${esc(a.label||'')}</td>
+  </tr>`;
+}).join('')}</tbody></table>`:''}
+<p style="margin-top:30px;color:#888;font-size:11px">Généré par PCB-Mosaic-Maker</p>
+<p class="no-print"><button onclick="window.print()">🖨 Imprimer / PDF</button></p>
+</body></html>`;
+      const blob = new Blob([html], {type:'text/html'});
+      const fname = `rapport_${meta.ref||'pcb'}_${new Date().toISOString().slice(0,10)}.html`;
+      downloadBlob(blob, fname);
+      hideBusy();
+      setStatus(`Rapport exporté : ${fname} (ouvrez-le, puis "Imprimer en PDF")`);
+    }catch(e){ hideBusy(); alert('Erreur rapport : '+e.message); console.error(e); }
+  },
+
+  exportJSON(){
+    const data = {
+      version: '1.0',
+      date: new Date().toISOString(),
+      images: this.images.map(im=>({name:im.name, w:im.bitmap.width, h:im.bitmap.height})),
+      refIdx: this.refIdx,
+      homographies: this.homographies,
+      deltas: this.deltas,
+      calibration: this.calibration,
+      annotations: this.annotations,
+      report: {
+        ref: $('rep-ref').value, sn: $('rep-sn').value, op: $('rep-op').value,
+        verdict: $('rep-verdict').value, notes: $('rep-notes').value
+      }
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+    downloadBlob(blob, `inspection_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`);
+    setStatus('Données JSON exportées.');
+  },
+
+  saveProject(){
+    if(!this.images.length){ alert('Aucun projet à sauvegarder'); return; }
+    showBusy('Sauvegarde', 'Encodage des images…', 20);
+    setTimeout(async ()=>{
+      try{
+        const imageData = [];
+        for(let i=0;i<this.images.length;i++){
+          updateBusy(`Image ${i+1}/${this.images.length}`, 20+60*i/this.images.length);
+          await sleep(0);
+          const im = this.images[i];
+          const tc=document.createElement('canvas');
+          tc.width=im.bitmap.width; tc.height=im.bitmap.height;
+          tc.getContext('2d').drawImage(im.bitmap, 0,0);
+          imageData.push({
+            name: im.name,
+            dataUrl: tc.toDataURL('image/jpeg', 0.85)
+          });
+        }
+        const data = {
+          version: '1.0',
+          format: 'pcbmosaic-project',
+          date: new Date().toISOString(),
+          refIdx: this.refIdx,
+          homographies: this.homographies,
+          deltas: this.deltas,
+          calibration: this.calibration,
+          annotations: this.annotations,
+          filters: this.filters,
+          report: {
+            ref: $('rep-ref').value, sn: $('rep-sn').value, op: $('rep-op').value,
+            verdict: $('rep-verdict').value, notes: $('rep-notes').value
+          },
+          images: imageData
+        };
+        updateBusy('Encodage final…', 90);
+        await sleep(0);
+        const blob = new Blob([JSON.stringify(data)], {type:'application/json'});
+        downloadBlob(blob, `projet_${new Date().toISOString().slice(0,10)}.pcbm.json`);
+        hideBusy();
+        setStatus('Projet sauvegardé.');
+      }catch(e){ hideBusy(); alert('Erreur sauvegarde : '+e.message); }
+    }, 50);
+  },
+
+  loadProjectFile(){
+    const inp=document.createElement('input');
+    inp.type='file'; inp.accept='.json,.pcbm,.pcbmosaic';
+    inp.onchange = e=>{
+      const f=e.target.files[0]; if(!f) return;
+      const r=new FileReader();
+      r.onload = async ()=>{
+        try{
+          const data = JSON.parse(r.result);
+          if(data.format!=='pcbmosaic-project') throw new Error('Format inconnu');
+          await this.loadProjectData(data);
+        }catch(err){ alert('Échec chargement : '+err.message); }
+      };
+      r.readAsText(f);
+    };
+    inp.click();
+  },
+
+  async loadProjectData(data){
+    showBusy('Chargement projet', 'Décodage…', 10);
+    this.images=[]; this.annotations=[]; this.homographies=[]; this.deltas=[];
+    for(let i=0;i<data.images.length;i++){
+      updateBusy(`Image ${i+1}/${data.images.length}`, 10+70*i/data.images.length);
+      await sleep(0);
+      const im = data.images[i];
+      const img = await new Promise(r=>{const a=new Image();a.onload=()=>r(a);a.src=im.dataUrl;});
+      const c = document.createElement('canvas'); c.width=img.width; c.height=img.height;
+      c.getContext('2d').drawImage(img, 0,0);
+      const cap=2048;
+      const sc=Math.min(1, cap/Math.max(c.width, c.height));
+      const thumb=document.createElement('canvas');
+      thumb.width=Math.round(c.width*sc); thumb.height=Math.round(c.height*sc);
+      thumb.getContext('2d').drawImage(c, 0,0, thumb.width, thumb.height);
+      this.images.push({name: im.name, bitmap:c, thumb, thumbScale:sc, orientation:1});
+    }
+    this.refIdx = data.refIdx;
+    this.homographies = data.homographies||[];
+    this.deltas = data.deltas || this.images.map(_=>[1,0,0,0,1,0,0,0,1]);
+    this.calibration = data.calibration||null;
+    this.annotations = data.annotations || [];
+    if(data.filters) Object.assign(this.filters, data.filters);
+    if(data.report){
+      $('rep-ref').value=data.report.ref||'';
+      $('rep-sn').value=data.report.sn||'';
+      $('rep-op').value=data.report.op||'';
+      $('rep-verdict').value=data.report.verdict||'pending';
+      $('rep-notes').value=data.report.notes||'';
+    }
+    this.refreshImageList();
+    this.refreshAnnotList();
+    this.updateCalibInfo();
+    if(this.homographies.length) await this.buildPreview();
+    $('btn-clear').disabled=false;
+    $('btn-align').disabled=false;
+    $('btn-export').disabled = !this.homographies.length;
+    $('btn-export-img').disabled = $('btn-export-pdf').disabled = $('btn-export-json').disabled = !this.homographies.length;
+    hideBusy();
+    setStatus('Projet chargé.');
+  }
+};
+
+/* ====================== Math helpers ====================== */
+function matMul3(A, B){
+  const R=new Array(9);
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    let s=0;
+    for(let k=0;k<3;k++) s += A[i*3+k] * B[k*3+j];
+    R[i*3+j] = s;
+  }
+  return R;
+}
+function applyHom(H, x, y){
+  const w = H[6]*x + H[7]*y + H[8];
+  const xp = (H[0]*x + H[1]*y + H[2])/w;
+  const yp = (H[3]*x + H[4]*y + H[5])/w;
+  return [xp, yp];
+}
+function buildGaussianPyr(mat, levels){
+  const cv2=cv;
+  const pyr=[mat.clone()];
+  for(let i=0;i<levels;i++){
+    const dst=new cv2.Mat();
+    cv2.pyrDown(pyr[pyr.length-1], dst);
+    pyr.push(dst);
+  }
+  return pyr;
+}
+function buildLaplacianPyr(mat, levels){
+  const cv2=cv;
+  const gau = buildGaussianPyr(mat, levels);
+  const lap=[];
+  for(let i=0;i<levels;i++){
+    const up=new cv2.Mat();
+    cv2.pyrUp(gau[i+1], up, new cv2.Size(gau[i].cols, gau[i].rows));
+    const sub=new cv2.Mat();
+    cv2.subtract(gau[i], up, sub);
+    lap.push(sub);
+    up.delete();
+  }
+  lap.push(gau[levels].clone());
+  // free gau except last? Already used in lap[last] via clone
+  for(let i=0;i<levels;i++) gau[i].delete();
+  gau[levels].delete();
+  return lap;
+}
+function drawArrow(ctx, x1, y1, x2, y2, headSize){
+  const a=Math.atan2(y2-y1, x2-x1);
+  ctx.beginPath();
+  ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - headSize*Math.cos(a-Math.PI/7), y2 - headSize*Math.sin(a-Math.PI/7));
+  ctx.lineTo(x2 - headSize*Math.cos(a+Math.PI/7), y2 - headSize*Math.sin(a+Math.PI/7));
+  ctx.closePath();
+  ctx.fill();
+}
+function esc(s){ return (s||'').toString().replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ====================== Boot ====================== */
+window.addEventListener('DOMContentLoaded', ()=>App.init());
+window.addEventListener('resize', ()=>{ App.redraw(); App.updateLoupeSize?.(); });
+</script>
+</body>
+</html>
