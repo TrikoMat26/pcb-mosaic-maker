@@ -665,6 +665,35 @@ function applyOrientationToImage(img, orientation){
   return c;
 }
 
+/* ====================== Feature detector factory ======================
+   The opencv.js build served by docs.opencv.org includes ORB but does NOT
+   always expose SIFT/AKAZE. This factory probes available APIs and falls
+   back gracefully so alignement n'explose pas avec "is not a constructor". */
+function makeFeatureDetector(preferred){
+  const tries = {
+    sift:  [() => new cv.SIFT(),       () => cv.SIFT_create && cv.SIFT_create()],
+    orb:   [() => new cv.ORB(4000),    () => cv.ORB_create && cv.ORB_create(4000)],
+    akaze: [() => new cv.AKAZE(),      () => cv.AKAZE_create && cv.AKAZE_create()],
+  };
+  function build(name){
+    for(const fn of (tries[name]||[])){
+      try{ const d = fn(); if(d) return d; }catch(_){ /* not in this build */ }
+    }
+    return null;
+  }
+  const order = preferred==='orb'   ? ['orb','akaze','sift']
+              : preferred==='akaze' ? ['akaze','orb','sift']
+              :                       ['sift','orb','akaze'];
+  for(const name of order){
+    const d = build(name);
+    if(d){
+      const normType = (name==='sift') ? cv.NORM_L2 : cv.NORM_HAMMING;
+      return { detector:d, normType, name };
+    }
+  }
+  return null;
+}
+
 /* ====================== App state ====================== */
 const App = {
   cvReady:false,
@@ -964,18 +993,15 @@ const App = {
     const Hs = new Array(N);
     Hs[refIdx] = [1,0,0,0,1,0,0,0,1];
 
-    // Build feature detector
-    let detector, normType;
-    if(detectorName==='orb'){
-      detector = new cv2.ORB(4000);
-      normType = cv2.NORM_HAMMING;
-    } else if(detectorName==='akaze'){
-      detector = new cv2.AKAZE();
-      normType = cv2.NORM_HAMMING;
-    } else {
-      detector = new cv2.SIFT();
-      normType = cv2.NORM_L2;
+    // Build feature detector (graceful fallback if requested algo absent of build)
+    const made = makeFeatureDetector(detectorName);
+    if(!made) throw new Error('Aucun détecteur (SIFT/ORB/AKAZE) disponible dans cette build OpenCV.js.');
+    if(made.name !== detectorName){
+      console.warn(`Detector "${detectorName}" indisponible dans opencv.js, fallback sur "${made.name}".`);
+      setStatus(`${detectorName.toUpperCase()} indisponible — fallback sur ${made.name.toUpperCase()}.`);
     }
+    const detector = made.detector;
+    const normType = made.normType;
 
     // Cache features
     const feats = [];
@@ -1894,7 +1920,13 @@ const App = {
     await sleep(20);
     try{
       const cv2=cv;
-      const detector = new cv2.SIFT();
+      const made = makeFeatureDetector('sift');
+      if(!made) throw new Error('Aucun détecteur (SIFT/ORB/AKAZE) disponible dans cette build OpenCV.js.');
+      if(made.name !== 'sift'){
+        console.warn(`SIFT indisponible dans opencv.js, fallback sur ${made.name}.`);
+        setStatus(`SIFT indisponible — fallback sur ${made.name.toUpperCase()}.`);
+      }
+      const detector = made.detector;
       const refMat = cv2.imread(this.refImage.canvas);
       const baseMat = cv2.imread(this.blendedThumb);
       const refG=new cv2.Mat(), baseG=new cv2.Mat();
@@ -1904,7 +1936,7 @@ const App = {
       const d1=new cv2.Mat(), d2=new cv2.Mat();
       detector.detectAndCompute(refG, new cv2.Mat(), kp1, d1);
       detector.detectAndCompute(baseG, new cv2.Mat(), kp2, d2);
-      const matcher=new cv2.BFMatcher(cv2.NORM_L2, false);
+      const matcher=new cv2.BFMatcher(made.normType, false);
       const knn=new cv2.DMatchVectorVector();
       matcher.knnMatch(d1, d2, knn, 2);
       const A=[], B=[];
