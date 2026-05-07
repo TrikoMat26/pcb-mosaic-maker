@@ -981,7 +981,7 @@ const App = {
       setStatus('Alignement terminé. Affinez si besoin (flèches sur image sélectionnée).');
     }catch(e){
       hideBusy();
-      alert('Échec alignement : '+e.message);
+      alert('Échec alignement : '+cvErr(e));
       console.error(e);
     }
   },
@@ -1090,8 +1090,9 @@ const App = {
       if(!silent) hideBusy();
     }catch(e){
       if(!silent) hideBusy();
-      if(!silent){ alert('Erreur fusion : '+e.message); }
-      else { console.warn('rebuild preview:', e.message); }
+      console.error('Fusion erreur :', e);
+      if(!silent){ alert('Erreur fusion : '+cvErr(e)); }
+      else { console.warn('rebuild preview:', cvErr(e)); }
     }
   },
 
@@ -1166,21 +1167,27 @@ const App = {
       alpha.delete(); channels.delete(); k.delete();
     }
 
-    let blended;
+    let blended = null;
     updateBusy('Fusion…', 70);
     await sleep(0);
-    try{
-      if(mode==='multiband'){
-        blended = await this.multibandBlend(warpedMats, maskMats);
-      } else if(mode==='feather' || mode==='average'){
-        blended = this.featherBlend(warpedMats, maskMats);
-      } else { // overlay
-        blended = this.overlayBlend(warpedMats, maskMats);
+    const runBlend = async (m) => {
+      if(m==='multiband') return await this.multibandBlend(warpedMats, maskMats);
+      if(m==='feather' || m==='average') return this.featherBlend(warpedMats, maskMats);
+      return this.overlayBlend(warpedMats, maskMats);
+    };
+    const cascade = (mode==='multiband') ? ['multiband','feather','overlay']
+                  : (mode==='feather' || mode==='average') ? ['feather','overlay']
+                  : ['overlay'];
+    let lastErr = null;
+    for(const m of cascade){
+      try { blended = await runBlend(m); break; }
+      catch(e){
+        lastErr = e;
+        console.warn(`Blend "${m}" a échoué :`, cvErr(e));
+        if(m !== mode) updateBusy(`Fusion "${m}" KO, tentative suivante…`, 75);
       }
-    }catch(e){
-      console.warn('blend fallback:', e.message);
-      blended = this.overlayBlend(warpedMats, maskMats);
     }
+    if(!blended) throw new Error('Toutes les méthodes de fusion ont échoué : '+cvErr(lastErr));
 
     // Output canvas
     const out = document.createElement('canvas');
@@ -1479,7 +1486,7 @@ const App = {
         this._overlayCanvas = this.warpToCanvas(this.images[idx].thumb, H);
         this._overlayCacheKey = cacheKey;
       }catch(e){
-        console.warn('Overlay warp failed:', e.message);
+        console.warn('Overlay warp failed:', cvErr(e));
         this._overlayCanvas = null;
       }
     }
@@ -1994,7 +2001,7 @@ const App = {
       setStatus('Référence alignée sur la mosaïque.');
     }catch(e){
       hideBusy();
-      alert('Échec alignement réf : '+e.message);
+      alert('Échec alignement réf : '+cvErr(e));
     }
   },
 
@@ -2074,7 +2081,7 @@ const App = {
       setStatus(`Image exportée: ${fname} (${finalCanvas.width}×${finalCanvas.height})`);
     }catch(e){
       hideBusy();
-      alert('Erreur export: '+e.message);
+      alert('Erreur export: '+cvErr(e));
       console.error(e);
     }
   },
@@ -2356,6 +2363,23 @@ function matMul3(A, B){
     R[i*3+j] = s;
   }
   return R;
+}
+// OpenCV.js exceptions are wasm pointers, not JS Errors. Without decoding we get
+// "undefined". This helper extracts a usable message regardless of the form.
+function cvErr(e){
+  if(!e && e!==0) return 'erreur inconnue';
+  if(typeof e === 'string') return e;
+  if(e instanceof Error || (e && e.message)) return e.message || String(e);
+  if(typeof e === 'number'){
+    try{
+      if(typeof cv !== 'undefined' && cv.exceptionFromPtr){
+        const ex = cv.exceptionFromPtr(e);
+        if(ex && ex.msg) return ex.msg;
+      }
+    }catch(_){}
+    return `OpenCV exception #${e}`;
+  }
+  try{ return String(e); }catch(_){ return 'erreur inconnue'; }
 }
 function applyHom(H, x, y){
   const w = H[6]*x + H[7]*y + H[8];
