@@ -1002,6 +1002,12 @@ const App = {
     }
     const detector = made.detector;
     const normType = made.normType;
+    // Lowe's ratio is calibrated for L2 (SIFT). For Hamming-based descriptors
+    // (ORB/AKAZE) the same threshold is too strict and produces few inliers.
+    if(normType === cv2.NORM_HAMMING && ratio < 0.8){
+      console.info(`Ratio test relâché 0.${Math.round(ratio*100)} → 0.80 pour ${made.name.toUpperCase()} (Hamming).`);
+      ratio = 0.80;
+    }
 
     // Cache features
     const feats = [];
@@ -1067,10 +1073,10 @@ const App = {
   },
 
   /* ====================== Stitching ====================== */
-  async buildPreview(){
+  async buildPreview({silent=false}={}){
     if(!this.images.length || !this.homographies.length) return;
-    showBusy('Fusion preview', 'Calcul du canvas…', 10);
-    await sleep(20);
+    if(!silent) showBusy('Fusion preview', 'Calcul du canvas…', 10);
+    await sleep(silent?0:20);
     try{
       const blendMode = $('blend-mode').value;
       const Hs_eff = this.homographies.map((H,i)=>matMul3(this.deltas[i], H));
@@ -1078,13 +1084,14 @@ const App = {
       this.blendedThumb = result;
       this._advFilterCached = null;
       this._overlayCacheIdx = -1;
-      this.fitView(true);
+      this._overlayCacheKey = null;
+      if(!silent) this.fitView(true);
       this.redraw();
-      hideBusy();
+      if(!silent) hideBusy();
     }catch(e){
-      hideBusy();
-      alert('Erreur fusion : '+e.message);
-      console.error(e);
+      if(!silent) hideBusy();
+      if(!silent){ alert('Erreur fusion : '+e.message); }
+      else { console.warn('rebuild preview:', e.message); }
     }
   },
 
@@ -1118,6 +1125,10 @@ const App = {
       const S=[scaleDown,0,0,0,scaleDown,0,0,0,1];
       return matMul3(S,h);
     });
+
+    // Memorize the transform used for blendedThumb so the live overlay
+    // (warpToCanvas) can reuse the SAME frame and stay aligned with the base.
+    this._stitchFrame = {tx, ty, scaleDown, W:finalW, H:finalH};
 
     updateBusy(`Warping ${N} images…`, 30);
     await sleep(0);
@@ -1457,20 +1468,22 @@ const App = {
   },
 
   drawOverlay(ctx){
-    // Show only the selected source image warped, semi-transparent
-    if(this._overlayCacheIdx !== this.selectedImage){
-      // Build a single-image stitch of the selected image with current Hs
-      const idx = this.selectedImage;
-      const H = matMul3(this.deltas[idx], this.homographies[idx]);
-      const refH = matMul3(this.deltas[this.refIdx], this.homographies[this.refIdx]);
-      // Compute relative position to base bounding box
-      // Easier: we just draw the warped image via 2D affine when H has no perspective
-      // Use canvas 2D transform from H if it's nearly affine
-      this._overlayCacheIdx = idx;
-      this._overlayCacheH = H;
-      // Pre-warp into a temp canvas at thumb resolution
-      this._overlayCanvas = this.warpToCanvas(this.images[idx].thumb, H);
+    // Show only the selected source image warped, semi-transparent.
+    // Cache key: idx + delta serialized, so nudges invalidate the cache.
+    const idx = this.selectedImage;
+    if(idx<0 || !this.deltas[idx] || !this.homographies[idx]) return;
+    const cacheKey = idx + ':' + this.deltas[idx].join(',');
+    if(this._overlayCacheKey !== cacheKey){
+      try{
+        const H = matMul3(this.deltas[idx], this.homographies[idx]);
+        this._overlayCanvas = this.warpToCanvas(this.images[idx].thumb, H);
+        this._overlayCacheKey = cacheKey;
+      }catch(e){
+        console.warn('Overlay warp failed:', e.message);
+        this._overlayCanvas = null;
+      }
     }
+    if(!this._overlayCanvas) return;
     ctx.save();
     ctx.globalAlpha = this.alpha;
     ctx.drawImage(this._overlayCanvas, 0,0);
@@ -1478,32 +1491,28 @@ const App = {
   },
 
   warpToCanvas(srcCanvas, H){
-    // Use OpenCV.js to warp into a canvas matching this.blendedThumb size
+    // Use OpenCV.js to warp into a canvas aligned with this.blendedThumb.
+    // CRITICAL: reuse the EXACT frame stored by stitch() so the overlay sits
+    // in the same coordinate system as the base mosaic. Recomputing the bbox
+    // from current deltas would shift the overlay relative to the base.
     const cv2=cv;
+    const frame = this._stitchFrame;
+    if(!frame) return null;
+    const {tx, ty, scaleDown, W, H:Hh} = frame;
     const src = cv2.imread(srcCanvas);
     const Hmat = cv2.matFromArray(3,3, cv2.CV_64F, H);
-    // Need same Translation as blendedThumb. We rebuild it from current Hs
-    const N = this.images.length;
-    let xmin=Infinity,ymin=Infinity,xmax=-Infinity,ymax=-Infinity;
-    for(let i=0;i<N;i++){
-      const Hi = matMul3(this.deltas[i], this.homographies[i]);
-      const w=this.images[i].thumb.width, h=this.images[i].thumb.height;
-      for(const [x,y] of [[0,0],[w,0],[w,h],[0,h]]){
-        const [xp,yp]=applyHom(Hi,x,y);
-        if(xp<xmin)xmin=xp; if(yp<ymin)ymin=yp; if(xp>xmax)xmax=xp; if(yp>ymax)ymax=yp;
-      }
-    }
-    const tx=-Math.floor(xmin), ty=-Math.floor(ymin);
-    const W=Math.ceil(xmax-xmin), Hh=Math.ceil(ymax-ymin);
-    const T=cv2.matFromArray(3,3,cv2.CV_64F,[1,0,tx,0,1,ty,0,0,1]);
-    const HT=new cv2.Mat();
-    cv2.gemm(T, Hmat, 1, new cv2.Mat(), 0, HT);
+    const T = cv2.matFromArray(3,3,cv2.CV_64F,[1,0,tx,0,1,ty,0,0,1]);
+    const S = cv2.matFromArray(3,3,cv2.CV_64F,[scaleDown,0,0,0,scaleDown,0,0,0,1]);
+    const TH = new cv2.Mat();
+    const HT = new cv2.Mat();
+    cv2.gemm(T, Hmat, 1, new cv2.Mat(), 0, TH);
+    cv2.gemm(S, TH, 1, new cv2.Mat(), 0, HT);
     const dst=new cv2.Mat();
     cv2.warpPerspective(src, dst, HT, new cv2.Size(W, Hh), cv2.INTER_LINEAR, cv2.BORDER_CONSTANT, new cv2.Scalar());
     const out=document.createElement('canvas');
     out.width=W; out.height=Hh;
     cv2.imshow(out, dst);
-    src.delete(); Hmat.delete(); T.delete(); HT.delete(); dst.delete();
+    src.delete(); Hmat.delete(); T.delete(); S.delete(); TH.delete(); HT.delete(); dst.delete();
     return out;
   },
 
@@ -1822,9 +1831,21 @@ const App = {
     }
     this.deltas[idx] = matMul3(M, this.deltas[idx]);
     this.invalidateOverlay();
+    this.scheduleRebuildPreview();
   },
 
-  invalidateOverlay(){ this._overlayCacheIdx=-1; },
+  invalidateOverlay(){ this._overlayCacheIdx=-1; this._overlayCacheKey=null; },
+
+  // Debounced rebuild of blendedThumb so the base mosaic catches up with
+  // delta nudges shortly after the user stops adjusting.
+  scheduleRebuildPreview(){
+    clearTimeout(this._rebuildPreviewTimer);
+    this._rebuildPreviewTimer = setTimeout(()=>{
+      if(this.images.length && this.homographies.length){
+        this.buildPreview({silent:true}).catch(e=>console.warn('rebuild preview:', e));
+      }
+    }, 350);
+  },
 
   onKeydown(e){
     // Ignore if typing in input
