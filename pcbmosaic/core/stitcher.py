@@ -107,45 +107,28 @@ class Stitcher:
         homographies: List[np.ndarray],
         scale: float = 1.0,
     ) -> np.ndarray:
-        """Renvoie la mosaïque finale (BGR) en utilisant les homographies."""
-        # Approche simplifiée : fusion directe avec les homographies
+        """Renvoie la mosaïque finale (BGR) en utilisant les homographies.
 
+        Stratégie d'empilement (ordre des couches) :
+        l'ordre de ``images`` détermine l'ordre des couches. ``images[0]``
+        est la couche **la plus en avant** : ses pixels sont placés en
+        premier sur le canevas et les couches suivantes ne remplissent que
+        les zones encore vides. C'est cohérent avec la liste latérale qui
+        affiche les photos du haut (au-dessus) vers le bas (derrière).
+        """
         # Calculer la taille du canevas et la matrice de translation
         T, size = self._compute_canvas(images, homographies)
 
         # Créer une image vide pour le résultat
         result = np.zeros((size[0], size[1], 3), dtype=np.uint8)
 
-        # Créer un masque pour suivre les pixels déjà remplis
+        # Masque qui suit les pixels déjà remplis (par une couche supérieure)
         filled_mask = np.zeros((size[0], size[1]), dtype=np.uint8)
 
-        # Warper et fusionner les images une par une
-        # Commencer par l'image de référence (celle du milieu)
-        ref_idx = len(images) // 2
-
-        # Traiter d'abord l'image de référence
-        img, H = images[ref_idx], homographies[ref_idx]
-        Ht = T @ H
-        warped = cv2.warpPerspective(
-            img, Ht, (size[1], size[0]),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT
-        )
-
-        # Créer un masque pour les pixels non noirs
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
-
-        # Copier l'image de référence dans le résultat
-        result = cv2.bitwise_and(warped, warped, mask=mask)
-        filled_mask = mask.copy()
-
-        # Traiter les autres images
-        for i, (img, H) in enumerate(zip(images, homographies)):
-            if i == ref_idx:
-                continue  # Déjà traité
-
-            # Appliquer l'homographie
+        # Traiter les photos dans l'ordre de la liste : images[0] en
+        # premier (couche du dessus), puis images[1], etc. Chaque photo
+        # ne dépose ses pixels que là où le résultat est encore vide.
+        for img, H in zip(images, homographies):
             Ht = T @ H
             warped = cv2.warpPerspective(
                 img, Ht, (size[1], size[0]),
@@ -153,20 +136,17 @@ class Stitcher:
                 borderMode=cv2.BORDER_CONSTANT
             )
 
-            # Créer un masque pour les pixels non noirs
+            # Masque des pixels non noirs de la photo warpée
             gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
 
-            # Ne copier que les pixels qui ne sont pas déjà remplis
+            # Ne déposer que les pixels qui ne sont pas déjà occupés par
+            # une couche supérieure
             new_pixels = cv2.bitwise_and(mask, cv2.bitwise_not(filled_mask))
-
-            # Fusionner avec le résultat actuel
             result = cv2.bitwise_or(
                 cv2.bitwise_and(warped, warped, mask=new_pixels),
                 result
             )
-
-            # Mettre à jour le masque des pixels remplis
             filled_mask = cv2.bitwise_or(filled_mask, mask)
 
         # Redimensionner si nécessaire
