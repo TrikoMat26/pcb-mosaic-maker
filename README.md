@@ -1,355 +1,462 @@
 # PCB-Mosaic-Maker
 
-Outil d'assemblage et d'inspection visuelle de cartes électroniques (PCB) à
-partir de plusieurs photos partiellement recouvrantes.
+Outil desktop Windows pour **assembler des photos partiellement recouvrantes
+d'une carte électronique** en une mosaïque haute résolution, puis pour
+**comparer un autre PCB à cette image de référence** afin de faire ressortir
+les défauts (composants manquants, soudures suspectes, pistes endommagées).
+
+Stack : Python 3.10+, PySide6, OpenCV, scikit-image, Pillow. Distribué sous
+forme de `.exe` portable via PyInstaller.
+
+> **Pour qui reprend le développement (notamment via Claude Code) :**
+> ce README est le document de référence à jour. Le `CHANGELOG.md` détaille
+> l'historique fonctionnel par version. Lis les deux avant de modifier
+> quoi que ce soit.
 
 ---
 
 ## Pourquoi cet outil
 
-Quand on photographie une carte trop grande ou trop fine pour tenir nette dans
-un seul cadre (objectif macro, profondeur de champ limitée, éclairage de
-microscope), il faut **plusieurs prises** qui se recouvrent partiellement. Le
-besoin métier est de :
-
-1. **Assembler** ces 2 à 10 photos en une seule mosaïque haute résolution.
-2. **Annoter** la mosaïque pour signaler des défauts (composants manquants,
-   soudures suspectes, traces abîmées, etc.) avec numérotation, type, sévérité.
-3. **Mesurer** des dimensions sur la carte (calibration mm/pixel).
-4. **Comparer** la carte produite avec une carte de référence (mode A/B,
-   onion-skin, split-screen).
-5. **Exporter** un livrable : image JPEG/PNG haute déf, rapport PDF, projet
-   sauvegardable, et un JSON des annotations.
-
-Cible d'utilisation : contrôle qualité électronique, retro-engineering,
-documentation technique de prototypes, analyse de pannes.
+Photographier un PCB en macro / microscope = champ trop étroit pour tenir
+toute la carte dans une prise nette. La solution : prendre 2 à 20 photos
+qui se recouvrent partiellement, les **assembler** en une mosaïque, puis
+utiliser cette mosaïque comme **référence d'inspection**. Quand un nouveau
+PCB sort de la chaîne, on le photographie de la même manière, on l'aligne
+sur la référence, et l'outil met en évidence les différences. Cible
+métier : contrôle qualité électronique, rétro-engineering, analyse de
+pannes.
 
 ---
 
-## Deux implémentations dans ce repo
+## Installation rapide
 
-### A. Version Qt / Python (la version « officielle » historique)
+### Lancement développement
 
 ```bash
+git clone <repo>
+cd pcb-mosaic-maker
 pip install -r requirements.txt
-python -m pcbmosaic.gui.main_window
+python run.py
 ```
 
-Stack : `PySide6`, `opencv-python`, `numpy`, `scikit-image`, `Pillow`, `tqdm`.
+`requirements.txt` : `PySide6 >= 6.7`, `numpy`, `opencv-python`, `Pillow`,
+`scikit-image`, `tqdm`.
 
-Modules :
+### Build d'un `.exe` portable Windows
 
-- `pcbmosaic/core/loader.py` — chargement et orientation EXIF
-- `pcbmosaic/core/aligner.py` — détection de features + homographies
-- `pcbmosaic/core/stitcher.py` — fusion (multiband / feather / overlay)
-- `pcbmosaic/core/exporter.py` — export image / rapport
-- `pcbmosaic/gui/main_window.py` — fenêtre principale Qt
-- `pcbmosaic/gui/canvas_view.py` — vue canvas, zoom/pan, annotations
-- `pcbmosaic/gui/tools_panel.py` — panneaux latéraux
-
-### B. Version HTML autonome (`pcb-mosaic-maker.html`)
-
-Page unique d'environ 2 400 lignes (HTML + CSS + JS dans un seul fichier),
-qui charge **OpenCV.js** depuis le CDN `docs.opencv.org/4.x/opencv.js`.
-Toute la logique tourne côté client, sans serveur.
-
-**Lancement :**
-
-```bash
-# Le plus simple
-xdg-open pcb-mosaic-maker.html        # Linux
-open pcb-mosaic-maker.html            # macOS
-start pcb-mosaic-maker.html           # Windows
-
-# Si OpenCV.js refuse de charger en file:// (Firefox strict)
-python -m http.server 8000
-# puis http://localhost:8000/pcb-mosaic-maker.html
+```powershell
+pip install -r requirements-dev.txt
+.\build.ps1
+# → dist\PCB-Mosaic-Maker.exe (≈150 MB)
 ```
 
-Premier lancement : ~10 Mo téléchargés depuis le CDN puis mis en cache.
+Le `.spec` PyInstaller (`pcbmosaic.spec`) exclut les modules Qt inutiles
+(WebEngine, Multimedia, Charts, 3D, Bluetooth…) pour limiter la taille.
 
 ---
 
-## Pipeline d'assemblage (commun aux deux versions)
+## Workflow utilisateur
 
-```
-[Photos] -> [Décodage + EXIF] -> [Détection features] -> [Matching knn]
-                                                              |
-                                                              v
-[Mosaïque finale] <- [Blend] <- [Warps perspectifs] <- [RANSAC + homographies]
-                                                              |
-                                                              v
-                                              [Ajustements manuels par image
-                                               via deltas pré-multipliés]
-```
+L'application est organisée en quatre étapes, exposées dans la barre de
+menus.
 
-1. **Décodage + EXIF** : chaque photo est chargée et redressée selon
-   l'orientation EXIF.
-2. **Réduction (thumb)** : pour les calculs interactifs, chaque photo est
-   réduite à ~1024 px max. Le bitmap original est conservé pour l'export
-   final.
-3. **Détection de points clés** : SIFT / ORB / AKAZE. La photo médiane sert
-   de référence par défaut.
-4. **Matching knn (k=2)** + ratio test de Lowe + RANSAC pour rejeter les
-   correspondances aberrantes → une homographie 3×3 par photo.
-5. **Warping perspectif** de chaque photo dans le repère de la mosaïque,
-   plus calcul d'un masque doux (distance transform sur le canal alpha).
-6. **Blending** : multiband Laplacien (le plus joli mais lourd), feather
-   (moyenne pondérée), ou overlay (empilage simple).
-7. **Ajustements manuels par image** : translation / rotation / échelle
-   stockées sous forme de matrice 3×3 `delta[i]`, pré-multipliée à `H[i]`
-   pour recalculer la mosaïque.
+### 1. Fichier → Ouvrir / Ajouter des photos
 
----
+- **Ouvrir des photos** (`Ctrl+O`) : sélection initiale (2 à 20 photos).
+  Réinitialise le lot et les clics éventuels d'une session précédente.
+- **Ajouter des photos** (`Ctrl+Shift+O`) : complète le lot courant —
+  utile pour piocher dans plusieurs dossiers. **L'alignement existant des
+  photos déjà chargées est préservé** (auto-align, clics, ajustements
+  souris). Seules les nouvelles photos sont alignées, par paire avec la
+  dernière photo existante, puis chaînées vers le repère global.
+  En cas d'échec d'alignement d'une nouvelle photo, un rollback complet
+  ramène à l'état d'avant l'ajout.
 
-## Inventaire fonctionnel (version HTML)
+L'orientation EXIF est appliquée via `PIL.ImageOps.exif_transpose`.
+Si une photo reste mal orientée (EXIF absent ou faux), voir le menu
+**Photos** ci-dessous.
 
-| Fonction | État |
-|---|---|
-| Import multi-photos (drag & drop / file picker) | OK |
-| Choix référence automatique (médiane) | OK |
-| Alignement SIFT / ORB / AKAZE | Cassé en pratique (voir plus bas) |
-| Sliders ratio test + seuil RANSAC | Calibration douteuse |
-| 4 modes de blend (multiband, feather, average, overlay) | Multiband OOM au-delà de ~6 Mpx |
-| Recalcul auto de la preview après nudge | OK (ajouté en cours de session) |
-| Nudge clavier ←↑↓→ + Shift (×10) | Fonctionnel mais peu utilisable |
-| Rotation Shift+molette / Échelle Alt+molette | Pas de feedback chiffré |
-| Reset image / Reset tout | OK |
-| Filtres globaux (luminosité, contraste, gamma, netteté, CLAHE, contours, N&B, invert) | OK mais **globaux uniquement** |
-| Loupe (taille + zoom réglables) | OK |
-| Annotations (cercle / flèche / rect / texte / mesure / calibration) | OK |
-| Numérotation + type + sévérité défaut | OK |
-| Calibration mm / pixel | OK |
-| Mode A/B vs photo de référence (onion / split / diff) | OK |
-| Alignement de la photo de réf sur la mosaïque | Hérite des problèmes SIFT |
-| Export image (JPEG/PNG) | OK pour les tailles raisonnables |
-| Export rapport PDF (généré côté JS) | OK |
-| Export annotations JSON | OK |
-| Sauvegarde / chargement projet (.pcbm.json) | OK |
-| Raccourcis clavier (P/L/C/A/R/T/M/K/F/1) | OK |
+### 2. Alignement
 
----
+Trois modes automatiques + un mode assisté par clics.
 
-## État actuel — Ce qui ne marche pas (synthèse honnête)
+| Mode    | Algo                                     | Cas d'usage                                                              |
+|---------|------------------------------------------|--------------------------------------------------------------------------|
+| `phase` | `cv2.phaseCorrelate` par paires          | Photos prises depuis la même incidence (recommandé pour PCB sur table).  |
+| `sift`  | SIFT + RANSAC, homographie complète      | Surfaces texturées, perspective variable. Fragile sur PCB répétitifs.    |
+| `orb`   | ORB + RANSAC                             | Fallback si SIFT indisponible. Moins discriminant que SIFT.              |
 
-L'utilisateur a stoppé la session avec ce verdict : *« l'alignement ne donne
-rien de cohérent, les ajustements sont fastidieux et inefficaces, l'interface
-n'est pas ergonomique et moche, RIEN NE VA »*. Voici le détail technique.
+Le mode `phase` est par défaut. Tous les modes assument que les photos
+sont chargées **dans l'ordre de capture** (la photo *n* est voisine de
+la photo *n+1*) et placent la photo médiane comme référence (pour le
+chaînage et le repère, pas pour l'ordre d'empilage).
 
-### 1. L'alignement automatique est médiocre
+**Mode assisté par clics** : *Référence → Aligner par clics…* (`Ctrl+L`).
+Ouvre une boîte modale avec deux photos consécutives côte à côte. On
+clique alternativement GAUCHE puis DROITE sur le même point physique
+(via, coin de composant, test point…). **Minimum 3 paires par couple
+d'images** (translation + rotation + échelle déterminées de façon robuste
+même avec un clic imprécis). Estimation par similarité via
+`cv2.estimateAffinePartial2D` en RANSAC. Navigation entre paires via les
+boutons ou `PgUp` / `PgDown`, annulation par `Ctrl+Z`.
 
-**Cause racine** : la build d'OpenCV.js servie par
-`docs.opencv.org/4.x/opencv.js` **ne contient pas SIFT** (le module
-`xfeatures2d` est exclu). Les seuls détecteurs réellement disponibles dans
-cette build sont **ORB** (et parfois AKAZE).
+Robustesse :
 
-Conséquences :
+- Les **clics sont persistants** : rouvrir la boîte réaffiche les
+  correspondances déjà saisies, prêtes à être ajustées ou complétées.
+- Si une nouvelle photo a été ajoutée après un premier click-align, les
+  paires déjà cliquées sont préservées et seule la nouvelle paire est à
+  compléter dans la boîte.
+- Si une paire reste sans clic, l'alignement courant de cette paire
+  (auto-align ou ajustement souris) est **préservé via `fallback_Hs`** au
+  lieu de retomber sur l'identité — on peut donc ne recliquer qu'**une**
+  paire problématique sans casser le reste de la mosaïque.
+- Les matrices `NaN` retournées par OpenCV sur configurations dégénérées
+  sont explicitement détectées et remontées en `RuntimeError` plutôt que
+  silencieusement propagées.
 
-- Le sélecteur UI propose SIFT / ORB / AKAZE mais SIFT est silencieusement
-  remplacé par ORB via une factory de fallback (`makeFeatureDetector` au
-  voisinage de la ligne 670 dans le HTML).
-- Les seuils par défaut (ratio test 0.70, RANSAC 3.0) sont calibrés pour la
-  distance L2 de SIFT. ORB utilise une distance de Hamming où ce ratio est
-  **trop strict** → trop peu d'inliers → homographies bancales. Un
-  ajustement automatique à 0.80 a été ajouté mais ne suffit pas sur les
-  vraies photos PCB.
-- Sur des images de PCB (peu de texture, beaucoup de répétitions
-  composants/pistes), ORB seul produit des correspondances faibles. Sans
-  filtrage géométrique fin (par ex. histogramme de translations dominantes),
-  RANSAC laisse passer des homographies dégénérées.
+### 3. Ajustement manuel direct
 
-**Pistes non explorées** :
+Une fois l'alignement automatique fait, chaque photo est un `PhotoItem`
+indépendant sur le canevas, librement déplaçable.
 
-- Compiler une build d'OpenCV.js custom **avec** `xfeatures2d` (SIFT, BRISK).
-- Ou abandonner SIFT et utiliser un workflow **carrelage 2D simple** : les
-  photos sont plus ou moins parallèles, l'utilisateur connaît l'ordre →
-  estimer juste tx/ty par phase correlation (`cv.phaseCorrelate`), beaucoup
-  plus stable que SIFT/ORB sur PCB.
-- Ou imposer à l'utilisateur de cliquer 2-3 points correspondants entre
-  chaque paire (alignement assisté) — beaucoup plus fiable.
+| Action                          | Souris / clavier                         |
+|---------------------------------|------------------------------------------|
+| Sélectionner / déplacer photo   | Clic-glisser                             |
+| Pivoter photo (1° par cran)     | **Shift + molette** (×10 avec Ctrl)      |
+| Mettre à l'échelle photo        | **Alt + molette** (rapide avec Ctrl)     |
+| Nudge sub-pixel                 | Flèches du clavier (×10 avec Shift)      |
+| Réinitialiser photo sélectionnée| Touche `R`                               |
+| Zoom de la vue                  | Molette nue                              |
+| Panoramique de la vue           | Bouton du milieu, ou Espace + glisser    |
 
-### 2. Les ajustements manuels par image sont fastidieux
+Le `sceneRect` se recalcule à chaque déplacement avec 50 % de marge, donc
+la surface de travail est extensible sans limite. Le panneau latéral
+affiche en temps réel les `tx, ty, rotation, échelle` de la photo
+sélectionnée.
 
-L'idée : pré-multiplier une matrice `delta[i]` à l'homographie et reconstruire
-la mosaïque. Mais en pratique :
+#### Ordre des couches
 
-- **Latence** : chaque nudge déclenche un `buildPreview()` debounced à 350 ms,
-  qui réexécute warp + blend de toutes les images. Sur un PCB de 6 photos,
-  ça prend ~1-2 s sur un PC modeste → impression de saccade.
-- **Pas de feedback live précis** : l'overlay semi-transparent montre la
-  position approximative ; pas de zoom local, pas de cible d'alignement.
-- **Pas de granularité fine** : Shift+flèche fait ×10, entre 1 et 10 px il
-  n'y a rien. Pour un alignement sub-pixel (qui serait pertinent sur du PCB),
-  le modèle est trop grossier.
-- **Pas d'indicateurs chiffrés** : impossible de voir « tx = −12 px,
-  rotation = 0,3° » pendant qu'on ajuste.
+Le groupe **« Photos chargées — ordre des couches »** du panneau latéral
+permet de choisir quelle photo apparaît au-dessus des autres dans les
+zones de recouvrement, **à la fois sur le canevas et dans la mosaïque
+exportée**. Convention : **haut de la liste = couche du dessus**.
 
-### 3. L'UI n'est pas ergonomique
+- Glisser-déposer dans la liste, ou boutons **▲ Avancer / ▼ Reculer**.
+- Le `Stitcher` parcourt les photos dans l'ordre de la liste : la 1ʳᵉ
+  dépose ses pixels en premier, les suivantes ne remplissent que les
+  zones encore vides. La photo « référence » (au sens du repère
+  coordonnées, `Hs[ref_idx] = I`) n'a plus aucun traitement particulier
+  pour l'empilage — elle peut être à n'importe quelle position de la
+  liste sans changer la disposition géométrique.
+- Lors d'un réordonnement, les positions géométriques sont préservées
+  (chaque photo conserve son homographie). Les clics sauvegardés sont
+  remis à zéro car les paires consécutives peuvent ne plus correspondre.
 
-Layout actuel : grid CSS à 3 colonnes (panneau gauche / canvas / panneau
-droit). C'est fonctionnel mais :
+### 4. Photos → Rotation manuelle
 
-- **Trop d'éléments visibles à la fois** : photos, alignement, blend,
-  filtres, loupe, annotations, calibration, A/B — tout cohabite.
-- **Pas de hiérarchie claire** entre étapes (1. importer, 2. aligner,
-  3. ajuster, 4. annoter, 5. exporter). Les onglets du panneau droit sont
-  censés aider mais ne sont pas pédagogiques.
-- **Esthétique** : palette dark, accents bleus, look « outil tech ».
-  L'utilisateur a explicitement trouvé ça « moche ». Une vraie app
-  d'inspection PCB mériterait une charte graphique soignée et un
-  onboarding.
-- **Mobile / tablette : pas de support**. Un patch responsive a été commencé
-  pendant la session puis annulé à la demande de l'utilisateur.
+Quand l'EXIF est absent ou faux et qu'une photo est à 90° du bon sens :
 
-### 4. Mémoire WASM saturée sur grandes mosaïques
+- *Pivoter la sélection ↻ 90°* (`Ctrl+R`)
+- *Pivoter la sélection ↺ 90°* (`Ctrl+Shift+R`)
+- *Pivoter la sélection 180°*
+- *Pivoter toutes les photos ↻ 90°* / ↺ 90°
 
-Le heap d'OpenCV.js fait ~256 MB. Le multiband Laplacien consomme environ
-21·W·H bytes par image (pyramides Laplacienne CV_32FC3 + Gaussienne CV_32FC1
-sur 4 niveaux). Conséquence : **OutOfMemory rapide** au-delà de quelques Mpx.
+La rotation est **destructive** sur le bitmap de la vignette ;
+`images_data[i]["user_rotation_deg"]` mémorise le cumul, et
+`ImageLoader.reload_full_res` la réapplique au moment du stitching
+pleine résolution.
 
-État actuel : `MAX_PREVIEW = 2500`, et au-delà de `N·W·H > 6 Mpx` on saute
-multiband d'office et on attaque au feather. Les fuites Mat en cas
-d'exception ont longtemps aggravé le problème ; corrigées en fin de session
-via `try/finally` partout.
+### 5. Référence → Définir comme référence
 
----
+Construit la mosaïque pleine résolution à partir des positions courantes
+(auto-align + manipulations souris) et la mémorise dans
+`self.reference_mosaic`. Nécessaire avant toute comparaison.
 
-## Historique des tentatives faites pendant la session
+### 6. Comparaison
 
-Pour qui reprend, voici les commits dans l'ordre de la branche
-`claude/python-to-html-conversion-kh3MO` :
+- *Comparaison → Charger un PCB inspecté (image)…* : charge un fichier
+  image déjà assemblé.
+- *Comparaison → Charger des photos d'un PCB inspecté…* : prend un
+  lot de photos, les aligne et les assemble automatiquement.
+- *Comparaison → Lancer la comparaison* (`F5`) :
+  1. Registration ECC de l'inspecté sur la référence (`cv2.findTransformECC`).
+  2. Égalisation d'éclairage par CLAHE sur le canal L de LAB.
+  3. Diff combinée : différence chromatique (`a`, `b`) + différence
+     structurelle (SSIM inversé) sur la luminance.
+  4. Seuillage Otsu + morphologie pour obtenir un masque propre.
+  5. Extraction des composantes connexes → liste de `Defect` triés par
+     sévérité (mélange aire relative + intensité moyenne).
+- Le canevas affiche la référence avec un voile rouge sur les défauts et
+  des bbox colorées vert→rouge selon la sévérité.
+- La liste latérale est cliquable : cliquer un défaut cadre la vue
+  dessus.
 
-| Commit | Sujet | Effet réel |
-|---|---|---|
-| `7b5ddfc` | HTML initial : portage Qt → page autonome | Base fonctionnelle mais avec bugs structurels |
-| `09277b5` | Factory `makeFeatureDetector` SIFT → ORB → AKAZE | A débloqué le crash `cv.SIFT is not a constructor` mais l'alignement reste médiocre |
-| `f83816e` | Overlay live aligné, rebuild auto debounced, ratio Hamming relâché | Ajustements deviennent visibles ; alignement ORB un peu meilleur |
-| `ecbee0f` | `cvErr()` décode les pointeurs WASM, cascade de fallback fusion | On voit enfin les vrais messages d'erreur OpenCV |
-| `ad93241` | Budget mémoire + `try/finally` dans tous les blends | Plus d'OOM en chaîne ; fallback feather robuste |
+### 7. Export
 
-### Ce qui a fonctionné
+- *Fichier → Exporter la mosaïque (JPEG)…*
+- *Comparaison → Exporter l'overlay des défauts…*
+- *Comparaison → Exporter le rapport JSON…*
 
-- Décoder les exceptions WASM via `cv.exceptionFromPtr` → fini les
-  `Erreur fusion : undefined`.
-- `try/finally` autour de chaque allocation `Mat` → plus de fuite mémoire.
-- Cascade `multiband → feather → overlay` avec `sleep(50)` entre tentatives
-  pour laisser le moteur respirer.
-- Mémorisation du frame de stitch (`this._stitchFrame`) pour que l'overlay
-  live et la mosaïque de base partagent le même repère.
-
-### Ce qui n'a PAS fonctionné
-
-- Tenter de « rendre le projet utilisable » en colmatant des bugs sans
-  remettre en cause l'architecture. Les vrais problèmes sont structurels :
-  - SIFT absent de la build CDN ⇒ workflow d'alignement à repenser.
-  - Le concept « delta × homographie + rebuild » est trop lourd pour une
-    retouche fine interactive.
-  - L'UI à 3 colonnes denses n'aide pas un utilisateur qui découvre le
-    workflow.
+Le JSON contient `{n_defects, defects: [{id, bbox, centroid, area_px,
+severity, mean_diff}, ...]}`.
 
 ---
 
-## Pistes pour la suite (non explorées)
-
-### Sur l'alignement
-
-1. **Phase correlation par paires** (`cv.phaseCorrelate`) au lieu de SIFT/ORB
-   pour les cas où les photos sont prises depuis le même angle (cas typique
-   PCB sur table). Beaucoup plus stable, gratuit en CPU, et sub-pixel.
-2. **Alignement assisté** : 2-3 clics par paire d'images sur des
-   correspondances visibles (vias, traces caractéristiques) → homographie
-   directe, robuste, pas besoin de features automatiques.
-3. **Build OpenCV.js custom** avec `xfeatures2d` pour avoir SIFT/BRISK pour
-   de vrai. Plus de Mo à charger mais ça résout 80 % des cas.
-4. **Détection de grille** spécifique PCB : si l'utilisateur prend ses
-   photos selon une grille connue (ex. 3×2), on peut ajouter cette
-   contrainte forte au modèle.
-
-### Sur les ajustements manuels
-
-1. **Compositing canvas 2D natif** au lieu de rebuild OpenCV : chaque image
-   dans son canvas propre, blend live via `globalCompositeOperation` et
-   `globalAlpha`. On perd le multiband mais on gagne 60 fps.
-2. **Indicateurs numériques** : afficher en temps réel `tx, ty, θ, scale`
-   pendant l'édition, avec champs éditables.
-3. **Drag & drop direct** de l'image sélectionnée sur le canvas, plus
-   naturel que les flèches clavier.
-4. **Pinch / 2 doigts** sur tablette pour rotation + scale combinés.
-5. **Pas sub-pixel** : permettre des nudges de 0,5 px ou même 0,1 px en
-   maintenant Ctrl par exemple.
-
-### Sur l'UI
-
-1. **Workflow par étapes** (wizard) : 1. import, 2. align, 3. ajustements,
-   4. annotations, 5. export — un seul panneau visible à la fois, avec
-   navigation linéaire.
-2. **Refonte avec un framework** (Svelte / React) pour des composants
-   maintenables au lieu d'un fichier monolithique de 2 400 lignes.
-3. **Charte graphique** : couleurs douces, typographie soignée, onboarding,
-   tooltips contextuels.
-4. **Responsive** : layout vertical sur mobile, panneaux en drawers.
-
-### Sur la mémoire / perf
-
-1. **Web Workers** : warps et blends dans un worker pour ne pas bloquer
-   l'UI.
-2. **OffscreenCanvas** pour le compositing live.
-3. **Tile-based rendering** pour les très grandes mosaïques (> 10 Mpx).
-
----
-
-## Structure du repo
+## Architecture du code
 
 ```
 pcb-mosaic-maker/
-├── README.md                      <- ce fichier
-├── requirements.txt               <- deps Python (Qt)
-├── pcb-mosaic-maker.html          <- version HTML autonome (~2 400 lignes)
-├── pcbmosaic/                     <- version Python officielle
-│   ├── core/
-│   │   ├── aligner.py
-│   │   ├── stitcher.py
-│   │   ├── loader.py
-│   │   └── exporter.py
-│   ├── gui/
-│   │   ├── main_window.py
-│   │   ├── canvas_view.py
-│   │   └── tools_panel.py
+├── run.py                       Point d'entrée (lance MainWindow)
+├── pcbmosaic.spec               Spec PyInstaller (build du .exe)
+├── build.ps1                    Script PowerShell de build Windows
+├── requirements.txt             Dépendances runtime
+├── requirements-dev.txt         Dépendances dev (pyinstaller, pytest)
+├── CHANGELOG.md                 Historique par version
+├── pcbmosaic/
+│   ├── __init__.py
+│   ├── core/                    Logique métier (sans Qt)
+│   │   ├── loader.py            ImageLoader : EXIF, downscale, reload_full_res
+│   │   ├── aligner.py           Aligner : phase / sift / orb / align_from_clicks
+│   │   ├── stitcher.py          Stitcher : canvas, warp, blend
+│   │   ├── exporter.py          Exporter : sauvegarde JPEG
+│   │   └── comparator.py        Comparator : ECC + diff LAB + SSIM + défauts
+│   ├── gui/                     Couche Qt
+│   │   ├── main_window.py       MainWindow : actions, menus, slots
+│   │   ├── canvas_view.py       CanvasView + PhotoItem (manipulation directe)
+│   │   ├── tools_panel.py       Panneau latéral droit
+│   │   └── click_align_dialog.py ClickAlignDialog (alignement assisté)
 │   └── tests/
-│       └── test_stitcher.py
+│       ├── test_stitcher.py
+│       ├── test_aligner_phase.py
+│       ├── test_aligner_clicks.py    Aligner.align_from_clicks (translation,
+│       │                              chaînage, rotation, fallback_Hs, dégénéré)
+│       └── test_comparator.py
 └── examples/
-    └── 20250427_*.jpg             <- 4 photos d'exemple d'un PCB
+    └── 20250427_*.jpg           4 photos d'exemple
 ```
+
+`run.py` installe un `sys.excepthook` global qui écrit toute exception
+non gérée dans `pcbmosaic-error.log` (à côté de `run.py` ou du `.exe`
+PyInstaller). Précieux pour diagnostiquer un crash de la version
+packagée sans console.
+
+### Rôle de chaque module
+
+**`core/loader.py`** — `ImageLoader.load(paths)` charge 2..20 fichiers,
+applique l'orientation EXIF via `ImageOps.exif_transpose`, downscale en
+vignette (max 2048 px), renvoie une liste de dict `{path, image, meta,
+scale, user_rotation_deg}`. `load_more(paths)` ajoute sans la borne
+haute. `reload_full_res(path, user_rotation_deg)` recharge un fichier
+en pleine résolution et applique l'EXIF + la rotation utilisateur.
+
+**`core/aligner.py`** — `Aligner(detector=...)` avec :
+
+- `align(images)` : entrée publique. Dispatche selon le mode.
+- `_align_phase(images)` : `cv2.phaseCorrelate` par paires successives
+  avec fenêtre de Hann. Translation uniquement. Chaîne vers la photo
+  centrale.
+- `_align_features(images)` : SIFT ou ORB + BFMatcher (L2 ou Hamming) +
+  ratio test de Lowe + RANSAC, homographie complète. Lève une exception
+  si moins de 6 matches valides.
+- `align_from_clicks(images, pair_clicks, fallback_Hs=None)` (statique) :
+  pour chaque paire `(k, k+1)`, calcule une similarité 2×3 via
+  `cv2.estimateAffinePartial2D(src=points_dans_k+1, dst=points_dans_k,
+  method=cv2.RANSAC, ransacReprojThreshold=5.0)`. Chaîne vers la photo
+  centrale.
+  - Validation préalable : l'étalement des points cliqués doit être
+    > 1 px dans chaque image, sinon `RuntimeError` immédiate.
+  - Le résultat `M` est testé contre `np.any(np.isnan(M))` (OpenCV peut
+    renvoyer une matrice de NaN sur configuration dégénérée), levée
+    explicite plutôt que propagation silencieuse.
+  - `fallback_Hs` : pour les paires sans clic suffisant, la relation
+    relative `rel[k+1] = inv(H[k]) @ H[k+1]` est dérivée du fallback,
+    préservant ainsi l'alignement courant de cette paire au lieu de
+    retomber sur l'identité.
+
+**`core/stitcher.py`** — `Stitcher.stitch(images, Hs, scale)` :
+
+1. `_compute_canvas` : calcule la taille du canvas et la matrice de
+   translation pour englober toutes les images warpées.
+2. Warp chaque image avec `cv2.warpPerspective(INTER_LINEAR)` puis seuil
+   binaire pour le masque.
+3. Stratégie courante : *premier arrivé, premier servi*. **L'ordre de
+   `images` détermine l'ordre des couches** : `images[0]` est la couche
+   la plus en avant (ses pixels sont posés en premier), `images[1]`
+   remplit ensuite les zones encore vides, etc. Plus aucun traitement
+   particulier de la photo « référence » : son rôle est uniquement de
+   fixer le repère de coordonnées (`Hs[ref_idx] = I`), pas l'empilage.
+   Un mode `multiband` Laplacien est codé mais pas branché —
+   **pourrait être activé dans une future version**.
+
+**`core/comparator.py`** — `Comparator.compare(reference, inspected)` :
+
+1. `_register` : `cv2.findTransformECC` (mode homographie) pour aligner
+   l'inspecté sur la référence ; fallback ORB en cas d'échec.
+2. `_diff_map` : convertit les deux en LAB, applique CLAHE sur L,
+   calcule `|Δa|+|Δb|` (chrominance) et `1 − SSIM(L)` (structure),
+   combine en `0.55·struct + 0.45·chroma`.
+3. `_binarize` : seuillage Otsu (ou seuil fixe) + ouverture/fermeture
+   morphologique.
+4. `_extract_defects` : `cv2.connectedComponentsWithStats` → liste de
+   `Defect(id, bbox, centroid, area_px, severity, mean_diff)` triés
+   par sévérité décroissante.
+5. `render_overlay(reference, result)` (statique) : compose un voile
+   rouge sur les défauts + bbox colorées vert→rouge.
+
+**`gui/canvas_view.py`** — `CanvasView(QGraphicsView)` + `PhotoItem`
+(`QGraphicsPixmapItem`). Le PhotoItem porte sa propre `_H_initial` plus
+les manipulations utilisateur (`pos`, `rotation`, `scale`). Méthodes
+clés :
+
+- `prepare_items(images, Hs_thumb)` : pose une PhotoItem par photo,
+  attribue le `Z-value` selon la position dans la liste pour matérialiser
+  l'**ordre des couches** (`images[0]` au-dessus de `images[1]`, etc.).
+- `current_homographies()` : lit `sceneTransform()` de chaque item →
+  matrice 3×3 utilisée par le stitcher pleine résolution.
+- `selected_index()` / `replace_photo_image(idx, new_bgr)` : utilisés
+  par les actions de rotation pour mettre à jour le bitmap d'une
+  photo sans casser sa position scénique.
+- `set_compare_overlay(overlay, result)` + `focus_defect(id)` : mode
+  comparaison.
+
+**`gui/tools_panel.py`** — `ToolsPanel(QWidget)` : sections résolution
+de sortie / mode d'alignement / liste des photos / manipulation /
+défauts. La liste des photos est **réordonnable** par glisser-déposer
+ou via les boutons ▲ Avancer / ▼ Reculer ; chaque changement émet
+`photoOrderChanged(List[str])` (les chemins dans le nouvel ordre).
+
+**`gui/main_window.py`** — `MainWindow` orchestre tout. État stocké
+dans `self.images_data` (liste de dict du loader), `self.homographies`,
+`self.reference_mosaic`, `self.inspected_mosaic`, `self.compare_result`,
+et `self.saved_pair_clicks` (correspondances persistantes du dialog
+d'alignement par clics). Slot `_on_photo_order_changed` synchronise
+`images_data` et `homographies` quand l'utilisateur réordonne la liste,
+sans toucher à la disposition géométrique du canvas.
+
+**`gui/click_align_dialog.py`** — `ClickAlignDialog(QDialog)` avec deux
+`_ClickableView` côte à côte. Maintient pour chaque paire d'images une
+liste `_clicks[k]` de tuples `('A'|'B', x, y)` dans l'ordre de saisie.
+Affiche des marqueurs numérotés colorés. Validation à la sortie :
+**au moins 3 paires complètes par couple**. Accepte un paramètre
+optionnel `initial_pair_clicks` pour pré-remplir le dialog avec des
+correspondances déjà saisies (réouverture après ajout de photos par ex.).
+
+---
+
+## Lancer les tests
+
+```bash
+pip install pytest
+python -m pytest pcbmosaic/tests/ -v
+```
+
+Couverture actuelle (11 tests) :
+
+- `test_stitcher.py` :
+  - `test_stitcher_minimal` — 4 tuiles avec fond gris uni, vérifie que
+    le canvas est entièrement rempli (> 99 % de pixels non noirs).
+  - `test_stitcher_layer_order_first_wins` — deux tuiles superposées
+    rouge/bleu, verrouille la sémantique « première de la liste =
+    couche du dessus ».
+- `test_aligner_phase.py` — 3 vues d'une même texture, vérifie que la
+  phase correlation retrouve les translations (tx < 0 à gauche, tx > 0
+  à droite).
+- `test_aligner_clicks.py` — `Aligner.align_from_clicks` :
+  - translation pure (2 images),
+  - chaînage sur 3 images,
+  - rotation + échelle (4 points, rotation 15°, scale 1.1),
+  - `fallback_Hs` préserve l'alignement d'une paire sans clic,
+  - absence de fallback retombe sur l'identité (comportement historique),
+  - configuration dégénérée (points concentrés) → `RuntimeError`.
+- `test_comparator.py` — PCB synthétique avec composant manquant et
+  composant en trop, vérifie que les 2 défauts sont détectés et triés
+  par sévérité ; `render_overlay` n'altère pas la référence.
+
+---
+
+## Limites connues + pistes pour la suite
+
+### Algorithmiques
+
+- **Stitcher** : pas de multiband blending actif → coutures visibles si
+  les expositions diffèrent. Le code Laplacien existe (`_multiband_blend`)
+  mais n'est pas appelé. À brancher avec un budget mémoire.
+- **Aligner phase** : ne gère que la translation. Si une photo a une
+  vraie rotation par rapport aux voisines, il faut passer en SIFT ou en
+  alignement par clics. Une extension log-polar pourrait gérer la
+  rotation automatiquement.
+- **Aligner SIFT/ORB** : peu fiable sur les PCB répétitifs (composants
+  identiques, vias en grille). Le ratio test à 0.75 calibré pour SIFT
+  est trop strict pour ORB (Hamming) — devrait passer à 0.80–0.85 en
+  mode ORB.
+- **Comparator** : suppose que référence et inspecté sont à des échelles
+  voisines. Si le cadrage diffère beaucoup, ECC ne converge pas ; le
+  fallback ORB peut bavurer. Une étape de mise à l'échelle initiale par
+  features serait bienvenue.
+
+### UX
+
+- Pas de wizard guidé étapes par étape. Les menus marchent, mais un
+  utilisateur métier nouveau peut se perdre.
+- Pas de thème personnalisé (look Qt par défaut). Une charte type
+  `qt-material` Fluent améliorerait beaucoup la perception.
+- Pas d'export d'un rapport HTML autonome partageable sur mobile.
+- Pas d'annotations manuelles supplémentaires sur la mosaïque (l'ancien
+  monolithe HTML les avait, mais elles n'ont pas été portées).
+- Pas de calibration mm/pixel propagée au rapport.
+
+### Distribution
+
+- Le `.exe` PyInstaller pèse ~150 MB. Nuitka donnerait ~80–120 MB et un
+  démarrage plus rapide. Pas critique pour un outil métier interne.
+- Pas de signature Authenticode → Windows SmartScreen affiche un
+  avertissement la première fois.
 
 ---
 
 ## Branches Git
 
-- `main` : version Python Qt fonctionnelle (point d'entrée historique).
-- `claude/python-to-html-conversion-kh3MO` : version HTML + corrections
-  (commits listés plus haut).
-
-Pour récupérer la branche HTML :
-
-```bash
-git fetch origin
-git checkout claude/python-to-html-conversion-kh3MO
-```
+- **`main`** : version historique (Python Qt 0.1, sans comparateur ni
+  alignement par clics).
+- **`claude/python-to-html-conversion-kh3MO`** : branche active. C'est
+  ici que vivent toutes les fonctionnalités 0.2.x (assemblage moderne,
+  comparateur, manipulation directe, alignement par clics, rotations).
+  Le fichier `pcb-mosaic-maker.html` est conservé pour l'historique
+  mais **n'est plus maintenu** — la version HTML/OpenCV.js a été
+  abandonnée pour cause de plafond mémoire WASM et d'absence de SIFT
+  dans le build CDN.
 
 ---
 
-## TL;DR pour qui reprend
+## Pour Claude Code / agents qui reprennent
 
-- L'app **fonctionne** sur les bases : import, fusion basique, annotations,
-  export.
-- L'alignement automatique est **bridé par le build CDN d'OpenCV.js** qui
-  n'a pas SIFT — il faut soit changer de build, soit changer d'approche
-  (phase correlation, alignement assisté à la souris).
-- Les ajustements manuels par image **existent** mais sont **trop lents et
-  pas assez fins** pour une vraie retouche. Refonte recommandée vers un
-  compositing canvas 2D live.
-- L'**UI** est dense et peu guidée : un workflow en étapes serait beaucoup
-  plus accueillant pour un utilisateur métier.
-- La **mémoire WASM** est un plafond dur à 256 MB ; toute opération qui
-  alloue plus doit être streamée par tuiles, ou déléguée à un canvas 2D
-  natif côté navigateur.
+Points d'entrée typiques selon la tâche :
+
+| Tâche                                           | Fichier à toucher en premier              |
+|-------------------------------------------------|-------------------------------------------|
+| Nouveau mode d'alignement                       | `pcbmosaic/core/aligner.py`               |
+| Améliorer la qualité du blending                | `pcbmosaic/core/stitcher.py`              |
+| Changer l'ordre / le z-order des photos         | `pcbmosaic/gui/tools_panel.py` (réorder) + `pcbmosaic/gui/canvas_view.py` (Z) + `pcbmosaic/core/stitcher.py` (empilage) |
+| Changer la détection de défauts                 | `pcbmosaic/core/comparator.py`            |
+| Ajouter une action menu / un raccourci          | `pcbmosaic/gui/main_window.py`            |
+| Modifier le dialog d'alignement par clics       | `pcbmosaic/gui/click_align_dialog.py`     |
+| Modifier l'interaction sur le canevas           | `pcbmosaic/gui/canvas_view.py`            |
+| Ajouter un widget dans le panneau latéral       | `pcbmosaic/gui/tools_panel.py`            |
+| Changer la procédure de build                   | `pcbmosaic.spec`, `build.ps1`             |
+| Ajouter / modifier des tests                    | `pcbmosaic/tests/`                        |
+
+Conventions du projet :
+
+- Code en français pour les chaînes affichées (UI, messages d'erreur,
+  commentaires longs). Identifiants et docstrings courts en anglais
+  OK si ça reste cohérent dans le fichier.
+- Pas de dépendances supplémentaires sans mise à jour de
+  `requirements.txt`.
+- Tests dans `pcbmosaic/tests/`, nom `test_*.py`, fonctions `test_*`.
+- L'API publique des modules `core/` reste **sans Qt** pour pouvoir
+  être testée et réutilisée hors GUI.
+
+Quand tu fais évoluer le projet, mets à jour le `CHANGELOG.md` (sous
+*[unreleased]* ou directement sous une nouvelle version) avant de
+commit.

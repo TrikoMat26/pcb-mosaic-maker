@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest cache (parfois généré dans le dossier du package)
+.pytest_cache/
+pcbmosaic/pytest-cache-files-*/
+
+# Build PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Sortie de l'application (log d'exceptions, mosaïques temporaires)
+pcbmosaic-error.log
+
+# Données de session Claude Code (worktrees, état local)
+.claude/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
